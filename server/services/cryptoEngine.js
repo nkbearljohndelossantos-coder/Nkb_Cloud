@@ -6,6 +6,51 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/**
+ * Deterministic RFC 8785 JSON Canonicalization Scheme (JCS)
+ * Recursively sorts keys to guarantee identical string representation
+ */
+export function canonicalJsonStringify(obj) {
+  if (obj === null || typeof obj !== 'object') {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(canonicalJsonStringify).join(',') + ']';
+  }
+  const keys = Object.keys(obj).sort();
+  const pairs = keys.map(k => JSON.stringify(k) + ':' + canonicalJsonStringify(obj[k]));
+  return '{' + pairs.join(',') + '}';
+}
+
+/**
+ * Builds the canonical message string covering all security-sensitive envelope fields
+ */
+export function buildCanonicalCommandString({
+  protocolVersion = '2.1.0',
+  commandId,
+  agentId,
+  commandType,
+  nonce = '',
+  keyVersion = 1,
+  issuedAt,
+  expiresAt,
+  payload = {}
+}) {
+  const canonicalPayload = canonicalJsonStringify(payload || {});
+  return `NKB-CMD-V1|${protocolVersion}|${commandId}|${agentId}|${commandType}|${nonce}|${keyVersion}|${issuedAt}|${expiresAt}|${canonicalPayload}`;
+}
+
+export function buildCanonicalHandshakeString({
+  protocolVersion = '2.1.0',
+  challengeId,
+  agentId,
+  serverNonce,
+  clientNonce,
+  serverTimestamp
+}) {
+  return `NKB-AUTH-V1|${protocolVersion}|${challengeId}|${agentId}|${serverNonce}|${clientNonce}|${serverTimestamp}`;
+}
+
 class CryptoEngine {
   constructor() {
     this.keysDir = path.join(__dirname, '..', '.keys');
@@ -14,6 +59,7 @@ class CryptoEngine {
     this.serverPrivateKey = null;
     this.serverPublicKey = null;
     this.serverFingerprint = null;
+    this.keyVersion = 1;
     this.initServerKeys();
   }
 
@@ -47,6 +93,17 @@ class CryptoEngine {
 
   computeKeyFingerprint(publicKeyPem) {
     return crypto.createHash('sha256').update(publicKeyPem.trim()).digest('hex');
+  }
+
+  signCanonicalCommand(commandEnvelope, privateKeyPem = null) {
+    const canonicalString = buildCanonicalCommandString(commandEnvelope);
+    return this.signPayload(canonicalString, privateKeyPem);
+  }
+
+  verifyCanonicalCommand(commandEnvelope, signatureBase64, publicKeyPem) {
+    if (!signatureBase64 || !publicKeyPem) return false;
+    const canonicalString = buildCanonicalCommandString(commandEnvelope);
+    return this.verifySignature(canonicalString, signatureBase64, publicKeyPem);
   }
 
   signPayload(data, privateKeyPem = null) {

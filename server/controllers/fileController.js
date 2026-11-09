@@ -575,16 +575,23 @@ export async function downloadFile(req, res) {
       if (chunkLength > SLICE_SIZE) {
         let currentOffset = start;
         const totalEnd = end;
-        while (currentOffset <= totalEnd) {
+        let clientAborted = false;
+
+        req.on('close', () => {
+          clientAborted = true;
+        });
+
+        while (currentOffset <= totalEnd && !clientAborted) {
           const sliceBytes = Math.min(SLICE_SIZE, totalEnd - currentOffset + 1);
           const chunkRes = await agentHub.readChunkFromStorage(volume.id, file.relative_path, currentOffset, sliceBytes);
+          if (clientAborted) break;
           const canWriteMore = res.write(chunkRes.buffer);
           if (!canWriteMore) {
             await new Promise(resolveDrain => res.once('drain', resolveDrain));
           }
           currentOffset += sliceBytes;
         }
-        res.end();
+        if (!clientAborted) res.end();
       } else {
         const chunkRes = await agentHub.readChunkFromStorage(volume.id, file.relative_path, start, chunkLength);
         res.send(chunkRes.buffer);

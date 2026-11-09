@@ -1,7 +1,7 @@
 import { WebSocketServer } from 'ws';
 import crypto from 'crypto';
 import db from '../config/db.js';
-import { cryptoEngine } from './cryptoEngine.js';
+import { cryptoEngine, buildCanonicalCommandString, buildCanonicalHandshakeString } from './cryptoEngine.js';
 
 class StorageAgentHub {
   constructor() {
@@ -100,6 +100,7 @@ class StorageAgentHub {
         ws.send(JSON.stringify({
           type: 'CHALLENGE_REQUEST',
           challengeId,
+          agentId: agent.id,
           serverNonce,
           serverTimestamp,
           serverPublicKey: this.crypto.serverPublicKey
@@ -259,14 +260,26 @@ class StorageAgentHub {
       return;
     }
 
-    // 3. Phase 2: SEC-02 Cryptographic Signature Verification (Ed25519 & Legacy HMAC)
-    const expectedPayload = `${challengeId}|${challenge.serverNonce}|${clientNonce}|${challenge.serverTimestamp}`;
+    // 3. Phase 2: SEC-02 Cryptographic Signature Verification (Canonical Ed25519 & Legacy HMAC)
+    const canonicalAuthString = buildCanonicalHandshakeString({
+      protocolVersion: '2.1.0',
+      challengeId,
+      agentId: challenge.agent.id,
+      serverNonce: challenge.serverNonce,
+      clientNonce,
+      serverTimestamp: challenge.serverTimestamp
+    });
+
+    const legacyPayload = `${challengeId}|${challenge.serverNonce}|${clientNonce}|${challenge.serverTimestamp}`;
     let isAuthenticated = false;
 
     // Check Ed25519 Asymmetric Digital Signature
     if (clientSignature && clientPublicKey) {
-      const isValidSig = this.crypto.verifySignature(expectedPayload, clientSignature, clientPublicKey);
-      if (isValidSig) {
+      // Try canonical string first, fallback to legacy payload string
+      if (
+        this.crypto.verifySignature(canonicalAuthString, clientSignature, clientPublicKey) ||
+        this.crypto.verifySignature(legacyPayload, clientSignature, clientPublicKey)
+      ) {
         isAuthenticated = true;
         // Persist verified Ed25519 public key in PostgreSQL
         try {
@@ -288,7 +301,7 @@ class StorageAgentHub {
 
     // Fallback to HMAC-SHA256 if client is in legacy mode
     if (!isAuthenticated && clientHmac) {
-      const expectedHmac = crypto.createHmac('sha256', challenge.secret).update(expectedPayload).digest('hex');
+      const expectedHmac = crypto.createHmac('sha256', challenge.secret).update(legacyPayload).digest('hex');
       const receivedBuf = Buffer.from(clientHmac || '');
       const expectedBuf = Buffer.from(expectedHmac);
 
@@ -324,6 +337,7 @@ class StorageAgentHub {
 
     ws.send(JSON.stringify({
       type: 'AUTH_GRANTED',
+      agentId: challenge.agent.id,
       sessionToken,
       serverPublicKey: this.crypto.serverPublicKey,
       serverTimestamp: Date.now()
@@ -405,8 +419,8 @@ class StorageAgentHub {
               `INSERT INTO storage_volumes (
                  id, device_id, volume_guid_evidence, assigned_name,
                  mount_path, filesystem_type, total_bytes, free_bytes,
-                 is_online, status, is_default
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, 'ONLINE', false)`,
+                 status, is_default
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ONLINE', false)`,
               [
                 crypto.randomUUID(), deviceId, vol.volumeGuid || vol.mountPath,
                 vol.volumeLabel || `Volume-${vol.driveLetter || 'X'}`,
@@ -460,7 +474,7 @@ class StorageAgentHub {
     }
   }
 
-  // Phase 1: SEC-01 & Phase 2: SEC-02 Typed, Signed Command Dispatch with Ed25519
+  // Phase 1: SEC-01 & Phase 2: SEC-02 Typed, Canonical Command Dispatch with Ed25519
   async dispatchCommand(agentId, commandType, payload = {}, timeoutMs = 30000) {
     const agentSession = this.agents.get(agentId);
     if (!agentSession || !agentSession.authenticated) {
@@ -469,6 +483,8 @@ class StorageAgentHub {
 
     const commandId = crypto.randomUUID();
     const idempotencyKey = crypto.randomUUID();
+    const nonce = this.crypto.generateSecureNonce(16);
+    const issuedAt = new Date().toISOString();
     const expiresAt = new Date(Date.now() + timeoutMs).toISOString();
 
     const schemaCommandTypeMap = {
@@ -485,10 +501,25 @@ class StorageAgentHub {
     };
     const dbCommandType = schemaCommandTypeMap[commandType] || commandType;
 
-    // Cryptographic Signature via Server Ed25519 Private Key & HMAC compatibility
-    const signData = `${commandId}|${commandType}|${idempotencyKey}|${expiresAt}|${JSON.stringify(payload)}`;
-    const signature = this.crypto.signPayload(signData);
-    const hmacSignature = crypto.createHmac('sha256', agentSession.agentSecret).update(signData).digest('hex');
+    // Build Canonical Command Payload Covering All Required Sensitive Fields
+    const canonicalCommandEnvelope = {
+      protocolVersion: '2.1.0',
+      commandId,
+      agentId,
+      commandType,
+      nonce,
+      keyVersion: 1,
+      issuedAt,
+      expiresAt,
+      payload
+    };
+
+    // Cryptographic Signature via Server Ed25519 Private Key
+    const signature = this.crypto.signCanonicalCommand(canonicalCommandEnvelope);
+
+    // Legacy HMAC signature for backward compatible test harnesses
+    const legacySignData = `${commandId}|${commandType}|${idempotencyKey}|${expiresAt}|${JSON.stringify(payload)}`;
+    const hmacSignature = crypto.createHmac('sha256', agentSession.agentSecret).update(legacySignData).digest('hex');
 
     await db.query(
       `INSERT INTO agent_commands (id, agent_id, command_type, idempotency_key, payload, status, issued_at, expires_at, dispatched_at)
@@ -508,11 +539,8 @@ class StorageAgentHub {
       this.pendingCommands.set(commandId, { resolve, reject, timer });
 
       agentSession.ws.send(JSON.stringify({
-        commandId,
-        commandType,
+        ...canonicalCommandEnvelope,
         idempotencyKey,
-        expiresAt,
-        payload,
         signature,
         hmacSignature,
         serverPublicKey: this.crypto.serverPublicKey
@@ -520,7 +548,7 @@ class StorageAgentHub {
     });
   }
 
-  // Phase 5: PERF-01 High-Performance Binary WebSocket Streaming Frame (Zero Base64 Inflation)
+  // Phase 5: PERF-01 High-Performance Binary WebSocket Streaming Frame (Zero Base64 Overhead)
   async writeChunkToStorage(volumeId, relativePath, chunkIndex, chunkData, isLastChunk, chunkSha256) {
     const volRes = await db.query('SELECT * FROM storage_volumes WHERE id = $1', [volumeId]);
     if (!volRes.rows || !volRes.rows[0]) throw new Error('Storage volume not found');
@@ -552,10 +580,12 @@ class StorageAgentHub {
       };
       const headerBuf = Buffer.from(JSON.stringify(headerObj), 'utf8');
       const magicBuf = Buffer.from('NKBS', 'utf8');
+      const verBuf = Buffer.from([0x01]); // Protocol version 1
+      const flagsBuf = Buffer.from([isLastChunk ? 0x01 : 0x00]);
       const lenBuf = Buffer.alloc(4);
       lenBuf.writeUInt32BE(headerBuf.length, 0);
 
-      const binaryFrame = Buffer.concat([magicBuf, lenBuf, headerBuf, chunkData]);
+      const binaryFrame = Buffer.concat([magicBuf, verBuf, flagsBuf, lenBuf, headerBuf, chunkData]);
 
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {

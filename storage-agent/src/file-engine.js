@@ -12,44 +12,71 @@ export class FileStorageEngine {
     if (rootPath) {
       const resolved = path.resolve(rootPath).toLowerCase();
       // Guard against registering root directories or sensitive system directories
-      const forbiddenRoots = ['c:\\', 'c:\\windows', 'c:\\windows\\system32', '/', '/etc', '/bin', '/usr'];
+      const forbiddenRoots = [
+        'c:\\', 'c:\\windows', 'c:\\windows\\system32', 'c:\\program files',
+        '/', '/etc', '/bin', '/usr', '/sbin', '/var', '/root'
+      ];
       if (!forbiddenRoots.includes(resolved)) {
         this.allowlistedRoots.add(resolved);
       }
     }
   }
 
-  // Strict path traversal and security validator
+  // Strict path traversal, UNC, ADS, DOS device, and security validator
   resolveSafePath(mountPath, relativePath) {
     if (!mountPath || !relativePath) {
       throw new Error('Security Error: mountPath and relativePath are required');
     }
 
-    // 1. Explicitly reject UNC paths and absolute drive letter escapes (SEC-05)
-    if (
-      /^[/\\]{2,}/.test(relativePath) ||
-      /^[a-zA-Z]:/.test(relativePath) ||
-      relativePath.startsWith('\\\\') ||
-      relativePath.startsWith('//')
-    ) {
-      throw new Error(`Security Violation: UNC network paths and absolute drive paths are strictly forbidden: ${relativePath}`);
+    // 1. Pre-check URL / Hex Percent-Encoded Traversal Attacks (%2e%2e, %2f, %5c)
+    let decoded = relativePath;
+    try {
+      if (decoded.includes('%')) {
+        decoded = decodeURIComponent(decoded);
+        // Double-decoding check for nested %252e attacks
+        if (decoded.includes('%')) {
+          decoded = decodeURIComponent(decoded);
+        }
+      }
+    } catch (e) {
+      throw new Error(`Security Violation: Malformed percent-encoding in path: ${relativePath}`);
     }
 
-    // 2. Reject null bytes and directory traversal
-    if (relativePath.includes('\0') || relativePath.includes('..')) {
+    // 2. Explicitly reject UNC paths, Extended-Length paths, and drive-relative paths (SEC-05)
+    // Matches: \\..., //..., \\?\..., \\.\..., C:..., D:...
+    if (
+      /^[/\\]{2,}/.test(decoded) ||
+      /^[/\\]{2,}/.test(relativePath) ||
+      /^[a-zA-Z]:/.test(decoded) ||
+      /^[a-zA-Z]:/.test(relativePath) ||
+      decoded.startsWith('\\\\') ||
+      decoded.startsWith('//') ||
+      decoded.includes('\\?\\') ||
+      decoded.includes('/?/')
+    ) {
+      throw new Error(`Security Violation: UNC network paths, extended-length paths, and absolute/drive-relative paths are strictly forbidden: ${relativePath}`);
+    }
+
+    // 3. Reject null bytes and directory traversal
+    if (decoded.includes('\0') || decoded.includes('..') || relativePath.includes('\0') || relativePath.includes('..')) {
       throw new Error(`Security Violation: Illegal path traversal or null byte detected: ${relativePath}`);
     }
 
-    // 3. Reject Windows Alternate Data Streams (ADS) and illegal characters
-    if (relativePath.includes(':') || /::\$[a-zA-Z0-9_]+/i.test(relativePath) || /[*?"<>|]/.test(relativePath)) {
+    // 4. Reject Windows Alternate Data Streams (ADS) and illegal characters
+    if (decoded.includes(':') || /::\$[a-zA-Z0-9_]+/i.test(decoded) || /[*?"<>|]/.test(decoded)) {
       throw new Error(`Security Violation: Windows alternate data stream (ADS) or illegal character detected: ${relativePath}`);
     }
 
-    // 4. Clean relative path
-    const sanitized = relativePath.replace(/^(\/|\\)+/, '');
+    // 5. Reject Trailing Dots and Spaces (Windows Win32 auto-strip vulnerability)
+    // e.g. "malware.exe." or "secret.txt "
+    const segments = decoded.replace(/^[/\\]+/, '').split(/[/\\]/);
+    for (const seg of segments) {
+      if (/[. ]+$/.test(seg)) {
+        throw new Error(`Security Violation: Trailing dots and spaces in path segments are forbidden on Windows: ${seg}`);
+      }
+    }
 
-    // 5. Reject Windows reserved system device names (CON, PRN, AUX, NUL, COM1..9, LPT1..9)
-    const segments = sanitized.split(/[/\\]/);
+    // 6. Reject Windows reserved system device names (CON, PRN, AUX, NUL, COM1..9, LPT1..9)
     const reservedDevicePattern = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
     for (const seg of segments) {
       if (reservedDevicePattern.test(seg.trim())) {
@@ -57,15 +84,18 @@ export class FileStorageEngine {
       }
     }
 
+    const sanitized = segments.join(path.sep);
     const resolvedMount = path.resolve(mountPath);
     const resolvedTarget = path.resolve(resolvedMount, sanitized);
 
-    // 6. Strict containment verification
-    if (!resolvedTarget.toLowerCase().startsWith(resolvedMount.toLowerCase())) {
+    // 7. Strict containment verification (Prefix Check)
+    const mountLower = resolvedMount.toLowerCase() + path.sep;
+    const targetLower = resolvedTarget.toLowerCase();
+    if (!targetLower.startsWith(resolvedMount.toLowerCase()) && !targetLower.startsWith(mountLower)) {
       throw new Error(`Security Boundary Violation: Target ${resolvedTarget} escapes allowlisted mount root ${resolvedMount}`);
     }
 
-    // 7. Reparse point, junction, and symbolic link inspection (TOCTOU mitigation)
+    // 8. Reparse point, junction, and symbolic link inspection (TOCTOU mitigation)
     let currentCheckPath = resolvedMount;
     for (const seg of segments) {
       currentCheckPath = path.join(currentCheckPath, seg);
@@ -253,7 +283,7 @@ export class FileStorageEngine {
     });
   }
 
-  // Safe file migration with checksum check (Zero destructive ops on source)
+  // Safe file migration with checksum check (Zero destructive ops on source - MIG-01)
   async migrateFile({ sourceMountPath, targetMountPath, relativePath, expectedSha256 }) {
     this.registerAllowlistedRoot(sourceMountPath);
     this.registerAllowlistedRoot(targetMountPath);
@@ -301,15 +331,21 @@ export class FileStorageEngine {
   }
 
   // Delete payload only when explicitly authorized by Super Admin with authorizationToken
-  async deleteFile({ mountPath, relativePath, authorizationToken }) {
+  async deleteFile({ mountPath, relativePath, authorizationToken, commandId }) {
     this.registerAllowlistedRoot(mountPath);
     const targetPath = this.resolveSafePath(mountPath, relativePath);
-    if (!authorizationToken) {
-      throw new Error('Security Violation: File deletion requires an explicit authorizationToken');
+
+    if (!authorizationToken || typeof authorizationToken !== 'string') {
+      throw new Error('Security Violation: File deletion requires an explicit cryptographic authorizationToken');
     }
+
+    if (commandId && !authorizationToken.includes(commandId)) {
+      throw new Error('Security Violation: Authorization token does not match the active commandId');
+    }
+
     if (fs.existsSync(targetPath)) {
       fs.unlinkSync(targetPath);
-      return { deleted: true };
+      return { deleted: true, targetPath };
     }
     return { deleted: false, reason: 'Already deleted' };
   }

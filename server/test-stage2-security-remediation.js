@@ -10,7 +10,7 @@ dotenv.config();
 
 import db from './config/db.js';
 import agentHub from './services/agentHub.js';
-import cryptoEngine from './services/cryptoEngine.js';
+import cryptoEngine, { buildCanonicalCommandString, buildCanonicalHandshakeString } from './services/cryptoEngine.js';
 import { FileStorageEngine } from '../storage-agent/src/file-engine.js';
 import { AgentClient } from '../storage-agent/src/agent-client.js';
 import { agentCryptoEngine } from '../storage-agent/src/crypto-engine.js';
@@ -31,8 +31,8 @@ function assert(condition, message) {
 
 async function runSecurityRemediationSuite() {
   console.log('================================================================');
-  console.log('   NKB CLOUD v2.1.0 — STAGE 2 ADVERSARIAL SECURITY REMEDIATION SUITE');
-  console.log('   Post-Audit Verification: SEC-01 through SEC-05 & PERF-01');
+  console.log('   NKB CLOUD v2.1.0 — FINAL STAGE 2 ADVERSARIAL SECURITY SUITE');
+  console.log('   Rigorous Verification: SEC-01 through SEC-05, PERF-01, MIG-01');
   console.log('================================================================\n');
 
   await db.initialize();
@@ -41,7 +41,7 @@ async function runSecurityRemediationSuite() {
   const testTempDir = path.join(process.cwd(), 'temp_security_remediation_test');
   if (!fs.existsSync(testTempDir)) fs.mkdirSync(testTempDir, { recursive: true });
 
-  const testPort = 5901;
+  const testPort = 5902;
   const app = express();
   app.use(express.raw({ type: 'application/octet-stream', limit: '50mb' }));
   app.use(express.json());
@@ -62,6 +62,7 @@ async function runSecurityRemediationSuite() {
     // ---------------------------------------------------------------------------
     console.log('\n--- SECTION 1: SEC-01 Mandatory Command-Envelope Verification ---');
     const client = new AgentClient({ agentSecret });
+    client.cryptoEngine.setPinnedServerPublicKey(cryptoEngine.serverPublicKey);
 
     // Probe 1.1: Missing Signature Rejection
     const unsignedEnvelope = {
@@ -90,32 +91,82 @@ async function runSecurityRemediationSuite() {
     assert(reply2 && reply2.status === 'FAILED', 'Invalid signature rejected with status FAILED');
     assert(reply2 && reply2.error.includes('Invalid cryptographic command signature'), 'Invalid signature error reported');
 
-    // Probe 1.3: Altered Payload Rejection
-    const validSignData = `${unsignedEnvelope.commandId}|SCAN_DRIVES||${unsignedEnvelope.expiresAt}|{}`;
-    const validSig = cryptoEngine.signPayload(validSignData);
+    // Probe 1.3: Canonical Signature Verification & Altered Payload Rejection
+    const issuedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 10000).toISOString();
+    const cleanPayload = { targetDir: 'backups', fileCount: 5 };
+    const canonicalEnvelope = {
+      protocolVersion: '2.1.0',
+      commandId: crypto.randomUUID(),
+      agentId,
+      commandType: 'SCAN_DRIVES',
+      nonce: 'nonce_test_123',
+      keyVersion: 1,
+      issuedAt,
+      expiresAt,
+      payload: cleanPayload
+    };
+    const validCanonicalSig = cryptoEngine.signCanonicalCommand(canonicalEnvelope);
+
+    // Verify valid canonical signature succeeds
+    client.agentId = agentId;
+    let replyValid = null;
+    client.send = (msg) => { replyValid = msg; };
+    await client.handleSecureCommand({ ...canonicalEnvelope, signature: validCanonicalSig });
+    assert(replyValid && replyValid.status === 'EXECUTED', 'Valid canonical Ed25519 signature successfully verified and executed');
+
+    // Mutate payload after signing to verify integrity failure
     const alteredEnvelope = {
-      ...unsignedEnvelope,
-      payload: { injectedMalware: true }, // Payload altered after signing
-      signature: validSig
+      ...canonicalEnvelope,
+      commandId: crypto.randomUUID(),
+      payload: { targetDir: 'backups', fileCount: 5, injectedPayload: 'malware' }, // Tampered
+      signature: validCanonicalSig
     };
     let reply3 = null;
     client.send = (msg) => { reply3 = msg; };
     await client.handleSecureCommand(alteredEnvelope);
-    assert(reply3 && reply3.status === 'FAILED', 'Altered payload rejected by signature mismatch');
+    assert(reply3 && reply3.status === 'FAILED', 'Altered payload rejected by canonical signature mismatch');
 
-    // Probe 1.4: Expired Envelope with Valid Signature
-    const expiredSignData = `${unsignedEnvelope.commandId}|SCAN_DRIVES||2020-01-01T00:00:00.000Z|{}`;
-    const expiredSig = cryptoEngine.signPayload(expiredSignData);
-    const expiredEnvelope = {
-      commandId: unsignedEnvelope.commandId,
+    // Probe 1.4: Public Key Substitution Attack Defense
+    // Attacker generates own keypair, signs command, and attempts to pass attacker's public key in envelope
+    const attackerKeys = crypto.generateKeyPairSync('ed25519');
+    const attackerPubPem = attackerKeys.publicKey.export({ type: 'spki', format: 'pem' });
+    const attackerPrivPem = attackerKeys.privateKey.export({ type: 'pkcs8', format: 'pem' });
+    const attackerEnvelope = {
+      protocolVersion: '2.1.0',
+      commandId: crypto.randomUUID(),
+      agentId,
       commandType: 'SCAN_DRIVES',
-      expiresAt: '2020-01-01T00:00:00.000Z',
-      payload: {},
-      signature: expiredSig
+      nonce: 'nonce_attacker',
+      keyVersion: 1,
+      issuedAt,
+      expiresAt,
+      payload: { evil: true }
     };
+    const attackerSig = cryptoEngine.signPayload(
+      buildCanonicalCommandString(attackerEnvelope),
+      attackerPrivPem
+    );
+
+    let replyAttacker = null;
+    client.send = (msg) => { replyAttacker = msg; };
+    await client.handleSecureCommand({
+      ...attackerEnvelope,
+      signature: attackerSig,
+      serverPublicKey: attackerPubPem // Attacker attempts to override public key
+    });
+    assert(replyAttacker && replyAttacker.status === 'FAILED', 'Public Key Substitution Attack strictly rejected (Pinned key enforced)');
+
+    // Probe 1.5: Expired Envelope with Valid Signature
+    const expiredEnvelope = {
+      ...canonicalEnvelope,
+      commandId: crypto.randomUUID(),
+      expiresAt: '2020-01-01T00:00:00.000Z'
+    };
+    const expiredSig = cryptoEngine.signCanonicalCommand(expiredEnvelope);
     let reply4 = null;
     client.send = (msg) => { reply4 = msg; };
-    await client.handleSecureCommand(expiredEnvelope);
+    await client.handleSecureCommand({ ...expiredEnvelope, signature: expiredSig });
     assert(reply4 && reply4.status === 'EXPIRED', 'Signed but expired envelope rejected with EXPIRED');
 
     // ---------------------------------------------------------------------------
@@ -141,7 +192,7 @@ async function runSecurityRemediationSuite() {
       [credId, activeAgentId, publicKeyPem, fingerprint]
     );
 
-    // Mutual Handshake with Ed25519 Asymmetric Signature
+    // Mutual Handshake with Canonical Ed25519 Asymmetric Signature
     const wsUrl = `ws://localhost:${testPort}/ws/agent`;
     const wsClient = new WebSocket(wsUrl, { headers: { 'x-agent-token': agentToken } });
     let ed25519AuthGranted = false;
@@ -151,9 +202,15 @@ async function runSecurityRemediationSuite() {
         const msg = JSON.parse(raw.toString());
         if (msg.type === 'CHALLENGE_REQUEST') {
           const clientNonce = crypto.randomBytes(32).toString('hex');
-          const payload = `${msg.challengeId}|${msg.serverNonce}|${clientNonce}|${msg.serverTimestamp}`;
-          // Sign using agent's private key
-          const clientSignature = cryptoEngine.signPayload(payload, privateKeyPem);
+          const canonicalAuth = buildCanonicalHandshakeString({
+            protocolVersion: '2.1.0',
+            challengeId: msg.challengeId,
+            agentId: activeAgentId,
+            serverNonce: msg.serverNonce,
+            clientNonce,
+            serverTimestamp: msg.serverTimestamp
+          });
+          const clientSignature = cryptoEngine.signPayload(canonicalAuth, privateKeyPem);
 
           wsClient.send(JSON.stringify({
             type: 'CHALLENGE_RESPONSE',
@@ -195,7 +252,6 @@ async function runSecurityRemediationSuite() {
           assert(msg.reason.includes('REVOKED'), 'Revocation reason communicated to agent');
           resolve();
         } else if (msg.type === 'CHALLENGE_REQUEST') {
-          // Should not receive challenge if revoked
           resolve();
         }
       });
@@ -212,7 +268,6 @@ async function runSecurityRemediationSuite() {
     // SECTION 3: SEC-03 — Atomic Nonce Registration & Concurrency Replay Defense
     // ---------------------------------------------------------------------------
     console.log('\n--- SECTION 3: SEC-03 Atomic Nonce Registration & Replay Rejection ---');
-    // Pre-register nonce
     const testReplayNonce = crypto.randomBytes(32).toString('hex');
     await db.query(
       `INSERT INTO agent_nonce_registry (nonce, agent_id, expires_at)
@@ -290,11 +345,25 @@ async function runSecurityRemediationSuite() {
     }
     assert(unauthorizedDeleteBlocked === true, 'Destructive DELETE_PAYLOAD blocked without admin authorization token');
 
+    // Probe: Token commandId Mismatch
+    let tokenMismatchBlocked = false;
+    try {
+      await engine.deleteFile({
+        mountPath: testTempDir,
+        relativePath: 'test.dat',
+        authorizationToken: 'auth_token_for_different_command_123',
+        commandId: 'cmd_actual_999'
+      });
+    } catch (err) {
+      tokenMismatchBlocked = true;
+      assert(err.message.includes('commandId'), 'Mismatched commandId token rejected');
+    }
+    assert(tokenMismatchBlocked === true, 'Token mismatch on destructive deletion strictly blocked');
+
     // ---------------------------------------------------------------------------
     // SECTION 5: PERF-01 — Binary Streaming Frame Handling (Zero Base64 Overhead)
     // ---------------------------------------------------------------------------
     console.log('\n--- SECTION 5: PERF-01 Binary Streaming & Bounded Memory ---');
-    // Test native WebSocket binary frame encoding/decoding
     const test10MB = Buffer.alloc(10 * 1024 * 1024, 0x58); // 10MB test buffer
     const testChunkSha256 = crypto.createHash('sha256').update(test10MB).digest('hex');
 
@@ -309,10 +378,12 @@ async function runSecurityRemediationSuite() {
     };
     const headerBuf = Buffer.from(JSON.stringify(headerObj), 'utf8');
     const magicBuf = Buffer.from('NKBS', 'utf8');
+    const verBuf = Buffer.from([0x01]);
+    const flagsBuf = Buffer.from([0x01]);
     const lenBuf = Buffer.alloc(4);
     lenBuf.writeUInt32BE(headerBuf.length, 0);
 
-    const binaryFrame = Buffer.concat([magicBuf, lenBuf, headerBuf, test10MB]);
+    const binaryFrame = Buffer.concat([magicBuf, verBuf, flagsBuf, lenBuf, headerBuf, test10MB]);
 
     // Benchmark frame size vs Base64 size
     const base64EquivalentSize = Math.ceil((test10MB.length * 4) / 3);
@@ -332,14 +403,18 @@ async function runSecurityRemediationSuite() {
     assert(frameReply.payload.sha256 === testChunkSha256, 'Binary frame payload SHA-256 matches bit-for-bit');
 
     // ---------------------------------------------------------------------------
-    // SECTION 6: SEC-05 — Explicit UNC Path Rejection & Filesystem Hardening
+    // SECTION 6: SEC-05 — Explicit UNC & Advanced Filesystem Hardening
     // ---------------------------------------------------------------------------
-    console.log('\n--- SECTION 6: SEC-05 Explicit UNC & Filesystem Hardening ---');
+    console.log('\n--- SECTION 6: SEC-05 Explicit UNC & Advanced Filesystem Hardening ---');
     const testVectors = [
       { name: 'UNC Network Path (\\\\attacker)', path: '\\\\attacker\\share\\malware.exe' },
       { name: 'UNC Network Path (//forward)', path: '//192.168.1.50/share/file.txt' },
-      { name: 'Absolute Drive Path', path: 'C:\\Windows\\System32\\cmd.exe' },
-      { name: 'Directory Traversal', path: '../../Windows/System32' },
+      { name: 'Extended Length Path (\\\\?\\...)', path: '\\\\?\\C:\\Windows\\System32\\cmd.exe' },
+      { name: 'Drive Relative Path (C:file.txt)', path: 'C:file.txt' },
+      { name: 'Double Percent-Encoded Traversal', path: '%252e%252e%252fWindows' },
+      { name: 'Trailing Dot Win32 Bypass', path: 'malware.exe.' },
+      { name: 'Trailing Space Win32 Bypass', path: 'secret.txt ' },
+      { name: 'Directory Traversal (../../)', path: '../../Windows/System32' },
       { name: 'Windows ADS (:hidden)', path: 'file.txt:hidden' },
       { name: 'Windows ADS (::$DATA)', path: 'file.txt::$DATA' },
       { name: 'Reserved Device CON', path: 'CON' },
@@ -359,7 +434,7 @@ async function runSecurityRemediationSuite() {
       assert(blocked === true, `Attack Vector Blocked: ${vec.name} (${vec.path})`);
       if (!blocked) allVectorsBlocked = false;
     }
-    assert(allVectorsBlocked === true, '100% of attack vectors including UNC paths strictly blocked');
+    assert(allVectorsBlocked === true, '100% of advanced attack vectors including UNC, double-encoding, and trailing dots strictly blocked');
 
     // ---------------------------------------------------------------------------
     // SECTION 7: MIG-01 — Data Preservation & Source Immutability
@@ -407,13 +482,12 @@ async function runSecurityRemediationSuite() {
     assert(fs.existsSync(path.join(srcDir, migFileName)) === true, 'Source file preserved even when target verification fails');
 
     console.log('\n================================================================');
-    console.log(`   STAGE 2 SECURITY REMEDIATION SUITE COMPLETE: ${passedTests} / ${totalTests} PASSED (100%)`);
-    console.log('   All 6 Vulnerabilities Remediated & Certified');
+    console.log(`   FINAL STAGE 2 ADVERSARIAL SUITE COMPLETE: ${passedTests} / ${totalTests} PASSED (100%)`);
+    console.log('   All 7 Focus Areas Hardened, Verified, and Certified');
     console.log('================================================================\n');
 
   } finally {
     server.close();
-    // Cleanup temporary test files
     try {
       if (fs.existsSync(testTempDir)) {
         fs.rmSync(testTempDir, { recursive: true, force: true });

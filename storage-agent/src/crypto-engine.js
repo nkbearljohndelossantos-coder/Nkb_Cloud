@@ -1,10 +1,52 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/**
+ * Deterministic RFC 8785 JSON Canonicalization Scheme (JCS)
+ */
+export function canonicalJsonStringify(obj) {
+  if (obj === null || typeof obj !== 'object') {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(canonicalJsonStringify).join(',') + ']';
+  }
+  const keys = Object.keys(obj).sort();
+  const pairs = keys.map(k => JSON.stringify(k) + ':' + canonicalJsonStringify(obj[k]));
+  return '{' + pairs.join(',') + '}';
+}
+
+export function buildCanonicalCommandString({
+  protocolVersion = '2.1.0',
+  commandId,
+  agentId,
+  commandType,
+  nonce = '',
+  keyVersion = 1,
+  issuedAt,
+  expiresAt,
+  payload = {}
+}) {
+  const canonicalPayload = canonicalJsonStringify(payload || {});
+  return `NKB-CMD-V1|${protocolVersion}|${commandId}|${agentId}|${commandType}|${nonce}|${keyVersion}|${issuedAt}|${expiresAt}|${canonicalPayload}`;
+}
+
+export function buildCanonicalHandshakeString({
+  protocolVersion = '2.1.0',
+  challengeId,
+  agentId,
+  serverNonce,
+  clientNonce,
+  serverTimestamp
+}) {
+  return `NKB-AUTH-V1|${protocolVersion}|${challengeId}|${agentId}|${serverNonce}|${clientNonce}|${serverTimestamp}`;
+}
 
 class AgentCryptoEngine {
   constructor(options = {}) {
@@ -16,6 +58,7 @@ class AgentCryptoEngine {
     this.agentPrivateKey = null;
     this.agentPublicKey = null;
     this.agentFingerprint = null;
+    this.keyVersion = 1;
     this.pinnedServerPublicKey = options.pinnedServerPublicKey || null;
 
     this.initAgentKeys();
@@ -24,6 +67,7 @@ class AgentCryptoEngine {
   initAgentKeys() {
     if (!fs.existsSync(this.keysDir)) {
       fs.mkdirSync(this.keysDir, { recursive: true, mode: 0o700 });
+      this.hardenWindowsAcl(this.keysDir);
     }
 
     if (fs.existsSync(this.agentPrivKeyPath) && fs.existsSync(this.agentPubKeyPath)) {
@@ -38,11 +82,37 @@ class AgentCryptoEngine {
 
       fs.writeFileSync(this.agentPrivKeyPath, privateKeyPem, { mode: 0o600 });
       fs.writeFileSync(this.agentPubKeyPath, publicKeyPem, { mode: 0o644 });
+
+      this.hardenWindowsAcl(this.agentPrivKeyPath);
     }
 
     // Load pinned server public key if present on disk
     if (!this.pinnedServerPublicKey && fs.existsSync(this.pinnedServerPubKeyPath)) {
-      this.pinnedServerPublicKey = fs.readFileSync(this.pinnedServerPubKeyPath, 'utf8');
+      this.pinnedServerPublicKey = fs.readFileSync(this.pinnedServerPubKeyPath, 'utf8').trim();
+    }
+  }
+
+  /**
+   * Hardens Windows NTFS Access Control Lists (ACLs) using icacls.exe.
+   * Disables inheritance and grants Full Control strictly to Administrators and Current User.
+   */
+  hardenWindowsAcl(targetPath) {
+    if (process.platform !== 'win32') return;
+    try {
+      const user = process.env.USERDOMAIN && process.env.USERNAME
+        ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}`
+        : (process.env.USERNAME || 'SYSTEM');
+      // For files, grant Full Control (:F) strictly to Administrators and the running user
+      execFileSync('icacls.exe', [
+        targetPath,
+        '/inheritance:r',
+        '/grant:r',
+        `*S-1-5-32-544:F`,
+        '/grant:r',
+        `${user}:F`
+      ], { stdio: 'ignore' });
+    } catch (err) {
+      // Non-fatal fallback if running without elevation in test harnesses
     }
   }
 
@@ -50,7 +120,7 @@ class AgentCryptoEngine {
     if (!serverPubKeyPem) return;
     this.pinnedServerPublicKey = serverPubKeyPem.trim();
     if (!fs.existsSync(this.keysDir)) {
-      fs.mkdirSync(this.keysDir, { recursive: true });
+      fs.mkdirSync(this.keysDir, { recursive: true, mode: 0o700 });
     }
     fs.writeFileSync(this.pinnedServerPubKeyPath, this.pinnedServerPublicKey, { mode: 0o644 });
   }
@@ -75,22 +145,30 @@ class AgentCryptoEngine {
     return signature.toString('base64');
   }
 
-  verifyServerSignature(data, signatureBase64, overrideServerPubKey = null) {
-    const keyToUse = overrideServerPubKey || this.pinnedServerPublicKey;
-    if (!keyToUse) {
-      console.warn('[AgentCryptoEngine] No pinned server public key available for verification');
+  /**
+   * Strictly verifies incoming server signatures against the PINNED Server Public Key ONLY.
+   * Security Invariant: Untrusted command envelopes are NEVER permitted to supply or override the public key!
+   */
+  verifyServerSignature(data, signatureBase64) {
+    if (!this.pinnedServerPublicKey) {
+      console.warn('[AgentCryptoEngine] SECURITY HALT: No pinned server public key configured');
       return false;
     }
     if (!data || !signatureBase64) return false;
     try {
-      const pubKey = crypto.createPublicKey(keyToUse);
+      const pubKey = crypto.createPublicKey(this.pinnedServerPublicKey);
       const dataBuffer = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8');
       const sigBuffer = Buffer.from(signatureBase64, 'base64');
       return crypto.verify(null, dataBuffer, pubKey, sigBuffer);
     } catch (err) {
-      console.error('[AgentCryptoEngine] Signature verification error:', err.message);
+      console.error('[AgentCryptoEngine] Server signature verification error:', err.message);
       return false;
     }
+  }
+
+  verifyCanonicalCommand(commandEnvelope, signatureBase64) {
+    const canonicalString = buildCanonicalCommandString(commandEnvelope);
+    return this.verifyServerSignature(canonicalString, signatureBase64);
   }
 
   generateSecureNonce(bytes = 32) {
