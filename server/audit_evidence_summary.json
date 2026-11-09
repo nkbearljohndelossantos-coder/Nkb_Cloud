@@ -1,0 +1,137 @@
+{
+  "probe1": {
+    "agentTokenColumn": {
+      "column_name": "agent_token",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    "credentialsColumns": [
+      "id",
+      "agent_id",
+      "hmac_secret_hash",
+      "key_version",
+      "status",
+      "created_at",
+      "expires_at",
+      "revoked_at",
+      "revoked_reason"
+    ],
+    "sampleAgentToken": "nkb_token_stage2_verified",
+    "sampleSecretHash": "2ce476d73ff9c75a6d5abf77fdd8b847ea516565143466709345b53badd8fc6a"
+  },
+  "probe2": {
+    "unsignedExecutionAllowed": true
+  },
+  "probe3": {
+    "rawChunkBytes": 10485760,
+    "base64ChunkLength": 13981016,
+    "overheadPercentage": 33,
+    "jsonEnvelopeLength": 13981125,
+    "memoryDeltaMB": 13
+  },
+  "probe4": [
+    {
+      "name": "Standard Path",
+      "path": "documents/spec.pdf",
+      "blocked": false,
+      "pass": true,
+      "errorMsg": ""
+    },
+    {
+      "name": "Directory Traversal (../)",
+      "path": "../../Windows/System32",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Illegal path traversal or null byte detected: ../../Windows/System32"
+    },
+    {
+      "name": "Deep Traversal with Mixed Slashes",
+      "path": "sub/..\\..\\..\\Windows",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Illegal path traversal or null byte detected: sub/..\\..\\..\\Windows"
+    },
+    {
+      "name": "Windows ADS (:stream)",
+      "path": "file.txt:hidden",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Windows alternate data stream (ADS) or illegal character detected: file.txt:hidden"
+    },
+    {
+      "name": "Windows ADS (::$DATA)",
+      "path": "file.txt::$DATA",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Windows alternate data stream (ADS) or illegal character detected: file.txt::$DATA"
+    },
+    {
+      "name": "Reserved Device CON",
+      "path": "CON",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Windows reserved system device name detected: CON"
+    },
+    {
+      "name": "Reserved Device con.txt (case variation)",
+      "path": "sub/con.txt",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Windows reserved system device name detected: con.txt"
+    },
+    {
+      "name": "Reserved Device AUX",
+      "path": "AUX",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Windows reserved system device name detected: AUX"
+    },
+    {
+      "name": "Reserved Device NUL",
+      "path": "NUL",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Windows reserved system device name detected: NUL"
+    },
+    {
+      "name": "Reserved Device COM1.dat",
+      "path": "COM1.dat",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Windows reserved system device name detected: COM1.dat"
+    },
+    {
+      "name": "Null Byte Injection",
+      "path": "file.txt\u0000.exe",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Illegal path traversal or null byte detected: file.txt\u0000.exe"
+    },
+    {
+      "name": "Absolute Windows Drive Path",
+      "path": "C:\\Windows\\notepad.exe",
+      "blocked": true,
+      "pass": true,
+      "errorMsg": "Security Violation: Windows alternate data stream (ADS) or illegal character detected: C:\\Windows\\notepad.exe"
+    },
+    {
+      "name": "UNC Network Path",
+      "path": "\\\\attacker\\share\\malware.exe",
+      "blocked": false,
+      "pass": false,
+      "errorMsg": ""
+    }
+  ],
+  "probe5": {
+    "migSuccess": {
+      "migrated": true,
+      "verified": true,
+      "bytes": 61,
+      "sha256": "239b0f59d26d8c5f85745915a605983dc852a8962d2cac96a2b50e6e6dedda77"
+    },
+    "sourceStillExists": true,
+    "sourceContentsMatch": true,
+    "targetExists": true,
+    "mismatchCaught": true
+  }
+}

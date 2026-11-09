@@ -1,0 +1,16 @@
+{
+  "name": "nkb-cloud-storage-agent",
+  "version": "1.0.0",
+  "description": "NKB Cloud Windows Storage Agent Background Service",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "node-windows": "^0.1.14",
+    "ws": "^8.18.0"
+  }
+}

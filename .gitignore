@@ -1,0 +1,10 @@
+node_modules/
+*/node_modules/
+client/node_modules/
+server/node_modules/
+storage-agent/node_modules/
+.env
+*.log
+local_storage/
+test_storage/
+.DS_Store
