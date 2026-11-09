@@ -10,7 +10,12 @@ export class FileStorageEngine {
   // Register approved directory allowlist
   registerAllowlistedRoot(rootPath) {
     if (rootPath) {
-      this.allowlistedRoots.add(path.resolve(rootPath).toLowerCase());
+      const resolved = path.resolve(rootPath).toLowerCase();
+      // Guard against registering root directories or sensitive system directories
+      const forbiddenRoots = ['c:\\', 'c:\\windows', 'c:\\windows\\system32', '/', '/etc', '/bin', '/usr'];
+      if (!forbiddenRoots.includes(resolved)) {
+        this.allowlistedRoots.add(resolved);
+      }
     }
   }
 
@@ -20,21 +25,30 @@ export class FileStorageEngine {
       throw new Error('Security Error: mountPath and relativePath are required');
     }
 
-    // 1. Reject null bytes and directory traversal
+    // 1. Explicitly reject UNC paths and absolute drive letter escapes (SEC-05)
+    if (
+      /^[/\\]{2,}/.test(relativePath) ||
+      /^[a-zA-Z]:/.test(relativePath) ||
+      relativePath.startsWith('\\\\') ||
+      relativePath.startsWith('//')
+    ) {
+      throw new Error(`Security Violation: UNC network paths and absolute drive paths are strictly forbidden: ${relativePath}`);
+    }
+
+    // 2. Reject null bytes and directory traversal
     if (relativePath.includes('\0') || relativePath.includes('..')) {
       throw new Error(`Security Violation: Illegal path traversal or null byte detected: ${relativePath}`);
     }
 
-    // 2. Reject Windows Alternate Data Streams (ADS) and illegal characters
-    // Matches any colon or ::$DATA in the relative path
+    // 3. Reject Windows Alternate Data Streams (ADS) and illegal characters
     if (relativePath.includes(':') || /::\$[a-zA-Z0-9_]+/i.test(relativePath) || /[*?"<>|]/.test(relativePath)) {
       throw new Error(`Security Violation: Windows alternate data stream (ADS) or illegal character detected: ${relativePath}`);
     }
 
-    // 3. Clean relative path
+    // 4. Clean relative path
     const sanitized = relativePath.replace(/^(\/|\\)+/, '');
 
-    // 4. Reject Windows reserved system device names (CON, PRN, AUX, NUL, COM1..9, LPT1..9)
+    // 5. Reject Windows reserved system device names (CON, PRN, AUX, NUL, COM1..9, LPT1..9)
     const segments = sanitized.split(/[/\\]/);
     const reservedDevicePattern = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
     for (const seg of segments) {
@@ -46,12 +60,12 @@ export class FileStorageEngine {
     const resolvedMount = path.resolve(mountPath);
     const resolvedTarget = path.resolve(resolvedMount, sanitized);
 
-    // 5. Strict containment verification
+    // 6. Strict containment verification
     if (!resolvedTarget.toLowerCase().startsWith(resolvedMount.toLowerCase())) {
       throw new Error(`Security Boundary Violation: Target ${resolvedTarget} escapes allowlisted mount root ${resolvedMount}`);
     }
 
-    // 6. Reparse point, junction, and symbolic link inspection
+    // 7. Reparse point, junction, and symbolic link inspection (TOCTOU mitigation)
     let currentCheckPath = resolvedMount;
     for (const seg of segments) {
       currentCheckPath = path.join(currentCheckPath, seg);
@@ -113,11 +127,18 @@ export class FileStorageEngine {
       const writeStream = fs.createWriteStream(finalTempPath);
       const hashStream = crypto.createHash('sha256');
 
+      // True Asynchronous Streaming Concatenation (Zero Event-Loop Freezing)
       for (const pFile of partFiles) {
         const pPath = path.join(partsDir, pFile);
-        const data = fs.readFileSync(pPath);
-        hashStream.update(data);
-        writeStream.write(data);
+        await new Promise((resolveChunk, rejectChunk) => {
+          const rStream = fs.createReadStream(pPath);
+          rStream.on('data', chunk => {
+            hashStream.update(chunk);
+            writeStream.write(chunk);
+          });
+          rStream.on('end', resolveChunk);
+          rStream.on('error', rejectChunk);
+        });
       }
 
       await new Promise((resolve, reject) => {
@@ -138,16 +159,20 @@ export class FileStorageEngine {
         for (const pFile of partFiles) {
           fs.unlinkSync(path.join(partsDir, pFile));
         }
-        fs.rmdirSync(partsDir);
-      } catch (e) {
-        // cleanup notice
+        if (fs.existsSync(partsDir)) {
+          fs.rmdirSync(partsDir);
+        }
+      } catch (cleanupErr) {
+        console.warn(`[FileEngine] Temporary chunk cleanup notice:`, cleanupErr.message);
       }
 
-      const stat = fs.statSync(targetPath);
+      const finalStat = fs.statSync(targetPath);
 
       return {
         completed: true,
-        bytesWritten: stat.size,
+        assembled: true,
+        bytesWritten: finalStat.size,
+        sizeBytes: finalStat.size,
         sha256: fullSha256,
         targetPath
       };
@@ -156,35 +181,50 @@ export class FileStorageEngine {
     return {
       completed: false,
       chunkIndex,
-      bytesWritten: buffer.length
+      bytesWritten: buffer.length,
+      isLastChunk: false
     };
   }
 
-  // Read a file slice / chunk with range support (Binary Buffer & Base64)
+  // Range reading supporting high-performance streaming slices
   async readChunk({ mountPath, relativePath, startByte = 0, length }) {
     this.registerAllowlistedRoot(mountPath);
     const targetPath = this.resolveSafePath(mountPath, relativePath);
 
     if (!fs.existsSync(targetPath)) {
-      throw new Error(`File not found on storage device: ${relativePath}`);
+      throw new Error(`File not found: ${relativePath}`);
     }
 
     const stat = fs.statSync(targetPath);
-    const totalBytes = stat.size;
-    const readLength = length ? Math.min(length, totalBytes - startByte) : totalBytes - startByte;
+    const fileSize = stat.size;
 
-    const fd = fs.openSync(targetPath, 'r');
-    const buffer = Buffer.alloc(readLength);
-    fs.readSync(fd, buffer, 0, readLength, startByte);
-    fs.closeSync(fd);
+    const start = Math.max(0, parseInt(startByte, 10) || 0);
+    const end = length ? Math.min(fileSize - 1, start + parseInt(length, 10) - 1) : fileSize - 1;
 
-    return {
-      buffer,
-      dataBase64: buffer.toString('base64'),
-      bytesRead: buffer.length,
-      totalBytes,
-      startByte
-    };
+    if (start >= fileSize && fileSize > 0) {
+      throw new Error(`Requested range out of bounds (Start: ${start}, File Size: ${fileSize})`);
+    }
+
+    return new Promise((resolve, reject) => {
+      const stream = fs.createReadStream(targetPath, { start, end });
+      const chunks = [];
+
+      stream.on('data', (d) => chunks.push(d));
+      stream.on('end', () => {
+        const fullBuffer = Buffer.concat(chunks);
+        resolve({
+          bytesRead: fullBuffer.length,
+          buffer: fullBuffer,
+          startByte: start,
+          endByte: end,
+          length: fullBuffer.length,
+          fileSize,
+          dataBuffer: fullBuffer,
+          dataBase64: fullBuffer.toString('base64')
+        });
+      });
+      stream.on('error', (err) => reject(err));
+    });
   }
 
   // Cryptographic checksum verification
@@ -251,7 +291,7 @@ export class FileStorageEngine {
 
     const stat = fs.statSync(tgt);
 
-    // Source file is NEVER modified or deleted
+    // Source file is NEVER modified or deleted (MIG-01)
     return {
       migrated: true,
       verified: true,
@@ -260,10 +300,13 @@ export class FileStorageEngine {
     };
   }
 
-  // Delete payload only when explicitly authorized by Super Admin
-  async deleteFile({ mountPath, relativePath }) {
+  // Delete payload only when explicitly authorized by Super Admin with authorizationToken
+  async deleteFile({ mountPath, relativePath, authorizationToken }) {
     this.registerAllowlistedRoot(mountPath);
     const targetPath = this.resolveSafePath(mountPath, relativePath);
+    if (!authorizationToken) {
+      throw new Error('Security Violation: File deletion requires an explicit authorizationToken');
+    }
     if (fs.existsSync(targetPath)) {
       fs.unlinkSync(targetPath);
       return { deleted: true };
@@ -271,3 +314,6 @@ export class FileStorageEngine {
     return { deleted: false, reason: 'Already deleted' };
   }
 }
+
+export const fileEngine = new FileStorageEngine();
+export default fileEngine;

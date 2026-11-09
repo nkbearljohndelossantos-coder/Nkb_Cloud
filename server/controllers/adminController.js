@@ -162,3 +162,69 @@ export async function generateAgentPairingToken(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export async function revokeAgentCredential(req, res) {
+  try {
+    const { agentId } = req.params;
+    const { reason } = req.body;
+
+    await db.query(
+      `UPDATE agent_credentials 
+       SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP, revoked_reason = $1 
+       WHERE agent_id = $2 AND status = 'ACTIVE'`,
+      [reason || 'Administrative revocation', agentId]
+    );
+
+    await db.query(
+      `UPDATE storage_agents SET status = 'REVOKED' WHERE id = $1`,
+      [agentId]
+    );
+
+    res.json({ message: `Agent credentials for agent ${agentId} have been successfully REVOKED.` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function rotateAgentKey(req, res) {
+  try {
+    const { agentId } = req.params;
+    const { newPublicKey, signatureAlgorithm } = req.body;
+
+    if (!newPublicKey) {
+      return res.status(400).json({ error: 'newPublicKey is required for key rotation' });
+    }
+
+    // Expire existing active credentials
+    await db.query(
+      `UPDATE agent_credentials 
+       SET status = 'EXPIRED', expires_at = CURRENT_TIMESTAMP 
+       WHERE agent_id = $1 AND status = 'ACTIVE'`,
+      [agentId]
+    );
+
+    // Insert new versioned active credential
+    const newCredId = crypto.randomUUID();
+    const fingerprint = crypto.createHash('sha256').update(newPublicKey.trim()).digest('hex');
+
+    await db.query(
+      `INSERT INTO agent_credentials (id, agent_id, public_key, signature_algorithm, key_fingerprint, key_version, status, expires_at)
+       VALUES ($1, $2, $3, $4, $5, 2, 'ACTIVE', CURRENT_TIMESTAMP + INTERVAL '365 days')`,
+      [newCredId, agentId, newPublicKey, signatureAlgorithm || 'ed25519', fingerprint]
+    );
+
+    await db.query(
+      `UPDATE storage_agents SET public_key = $1 WHERE id = $2`,
+      [newPublicKey, agentId]
+    );
+
+    res.json({
+      message: 'Agent key rotated successfully',
+      agentId,
+      newCredentialId: newCredId,
+      fingerprint
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}

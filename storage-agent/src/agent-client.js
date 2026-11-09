@@ -3,6 +3,8 @@ import os from 'os';
 import crypto from 'crypto';
 import { WindowsDiskDetector } from './disk-detector.js';
 import { FileStorageEngine } from './file-engine.js';
+import { agentCryptoEngine } from './crypto-engine.js';
+import { commandJournal } from './command-journal.js';
 
 export class AgentClient {
   constructor(config = {}) {
@@ -13,6 +15,9 @@ export class AgentClient {
 
     this.diskDetector = new WindowsDiskDetector();
     this.fileEngine = new FileStorageEngine();
+    this.cryptoEngine = agentCryptoEngine;
+    this.journal = commandJournal;
+    this.executedCommands = this.journal.entries;
 
     this.ws = null;
     this.heartbeatTimer = null;
@@ -23,7 +28,6 @@ export class AgentClient {
     this.activeVolumes = [];
     this.authenticated = false;
     this.sessionToken = null;
-    this.executedCommands = new Map(); // idempotencyKey -> result
   }
 
   start() {
@@ -40,7 +44,8 @@ export class AgentClient {
       this.ws = new WebSocket(this.serverUrl, {
         headers: {
           'x-agent-token': this.agentToken,
-          'x-agent-name': this.agentName
+          'x-agent-name': this.agentName,
+          'x-agent-pubkey-fingerprint': this.cryptoEngine.agentFingerprint
         }
       });
 
@@ -51,18 +56,28 @@ export class AgentClient {
 
       this.ws.on('message', async (data) => {
         try {
+          // 1. Detect and Handle Native Binary WebSocket Streaming Frames (PERF-01)
+          if (Buffer.isBuffer(data) && data.length >= 8 && data.subarray(0, 4).toString('utf8') === 'NKBS') {
+            await this.handleBinaryStreamFrame(data);
+            return;
+          }
+
+          // 2. Text / JSON Envelope Message
           const envelope = JSON.parse(data.toString());
           
-          // Handle Mutual Challenge-Response Authentication
+          // Mutual Challenge-Response Authentication (SEC-02)
           if (envelope.type === 'CHALLENGE_REQUEST') {
             await this.handleChallengeRequest(envelope);
             return;
           }
 
           if (envelope.type === 'AUTH_GRANTED') {
-            console.log(`[StorageAgent] Mutual HMAC-SHA256 challenge authentication GRANTED.`);
+            console.log(`[StorageAgent] Mutual asymmetric Ed25519 challenge authentication GRANTED.`);
             this.authenticated = true;
             this.sessionToken = envelope.sessionToken;
+            if (envelope.serverPublicKey) {
+              this.cryptoEngine.setPinnedServerPublicKey(envelope.serverPublicKey);
+            }
             this.startHeartbeat();
             await this.reportDrives();
             this.startPeriodicScan();
@@ -97,18 +112,85 @@ export class AgentClient {
     }
   }
 
-  async handleChallengeRequest({ challengeId, serverNonce, serverTimestamp }) {
+  // Handle Binary WebSocket Streaming Frame with Zero Base64 Overhead (PERF-01)
+  async handleBinaryStreamFrame(rawBuffer) {
     try {
-      console.log(`[StorageAgent] Received server challenge [${challengeId}]. Computing HMAC-SHA256 signature...`);
-      const clientNonce = crypto.randomBytes(32).toString('hex');
-      const payload = `${challengeId}|${serverNonce}|${clientNonce}|${serverTimestamp}`;
-      const clientHmac = crypto.createHmac('sha256', this.agentSecret).update(payload).digest('hex');
+      // Header layout: [Magic 4B: 'NKBS'][Header JSON Length 4B UInt32BE][Header JSON][Raw Payload]
+      const headerLength = rawBuffer.readUInt32BE(4);
+      const headerJson = rawBuffer.subarray(8, 8 + headerLength).toString('utf8');
+      const header = JSON.parse(headerJson);
+      const binaryPayload = rawBuffer.subarray(8 + headerLength);
+
+      const { commandId, idempotencyKey, mountPath, relativePath, chunkIndex, isLastChunk, chunkSha256 } = header;
+
+      // Verify command journal for idempotency
+      const recordKey = idempotencyKey || commandId;
+      const startCheck = this.journal.recordCommandStart(commandId, 'WRITE_CHUNK_STREAM', recordKey, chunkSha256);
+      if (startCheck.isDuplicate) {
+        this.send({
+          type: 'COMMAND_REPLY',
+          commandId,
+          status: 'EXECUTED',
+          payload: startCheck.record.result
+        });
+        return;
+      }
+
+      // Stream write directly to disk
+      const result = await this.fileEngine.writeChunk({
+        mountPath,
+        relativePath,
+        chunkIndex,
+        chunkBuffer: binaryPayload,
+        isLastChunk,
+        chunkSha256
+      });
+
+      this.journal.recordCommandComplete(commandId, recordKey, result);
+
+      this.send({
+        type: 'COMMAND_REPLY',
+        commandId,
+        status: 'EXECUTED',
+        payload: result
+      });
+    } catch (err) {
+      console.error('[StorageAgent] Binary stream frame execution error:', err.message);
+      this.send({
+        type: 'COMMAND_REPLY',
+        status: 'FAILED',
+        error: err.message
+      });
+    }
+  }
+
+  // Phase 2: SEC-02 Ed25519 Asymmetric Challenge Signing
+  async handleChallengeRequest({ challengeId, serverNonce, serverTimestamp, serverPublicKey }) {
+    try {
+      console.log(`[StorageAgent] Received server challenge [${challengeId}]. Computing Ed25519 signature...`);
+      
+      // Pin server public key if supplied
+      if (serverPublicKey) {
+        this.cryptoEngine.setPinnedServerPublicKey(serverPublicKey);
+      }
+
+      const clientNonce = this.cryptoEngine.generateSecureNonce(32);
+      const payloadString = `${challengeId}|${serverNonce}|${clientNonce}|${serverTimestamp}`;
+      
+      // Sign with local agent Ed25519 private key
+      const clientSignature = this.cryptoEngine.signPayload(payloadString);
+      
+      // Compute fallback HMAC for backward compatibility during key transition
+      const clientHmac = crypto.createHmac('sha256', this.agentSecret).update(payloadString).digest('hex');
 
       this.send({
         type: 'CHALLENGE_RESPONSE',
         challengeId,
         clientNonce,
+        clientSignature,
         clientHmac,
+        clientPublicKey: this.cryptoEngine.agentPublicKey,
+        keyFingerprint: this.cryptoEngine.agentFingerprint,
         agentVersion: '2.1.0'
       });
     } catch (err) {
@@ -156,11 +238,10 @@ export class AgentClient {
           }
         });
       }
-    }, 15000); // 15-second heartbeat
+    }, 15000);
   }
 
   startPeriodicScan() {
-    // Drive rescan every 30 seconds
     this.scanTimer = setInterval(() => this.reportDrives(), 30000);
   }
 
@@ -191,34 +272,28 @@ export class AgentClient {
     }
   }
 
-  // Handle strictly typed secure command envelopes
+  // Phase 1: SEC-01 Strictly Typed & Mandatory Cryptographic Signature Verification
   async handleSecureCommand(envelope) {
-    const { commandId, commandType, idempotencyKey, expiresAt, payload, signature } = envelope;
+    const { commandId, commandType, idempotencyKey, expiresAt, payload, signature, serverPublicKey } = envelope;
 
     if (!commandId || !commandType) {
+      console.warn('[StorageAgent] REJECTED: Command missing commandId or commandType');
       return;
     }
 
-    // 1. Verify envelope cryptographic signature if signature is present
-    if (signature) {
-      const signData = `${commandId}|${commandType}|${idempotencyKey || ''}|${expiresAt}|${JSON.stringify(payload || {})}`;
-      const expectedSig = crypto.createHmac('sha256', this.agentSecret).update(signData).digest('hex');
-      
-      const sigBuffer = Buffer.from(signature);
-      const expectedBuffer = Buffer.from(expectedSig);
-      if (sigBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
-        console.warn(`[StorageAgent] Signature verification failed for command ${commandId} (${commandType})`);
-        this.send({
-          type: 'COMMAND_REPLY',
-          commandId,
-          status: 'FAILED',
-          error: 'Invalid HMAC-SHA256 command signature'
-        });
-        return;
-      }
+    // 1. MANDATORY SIGNATURE CHECK (SEC-01) - Fail Closed
+    if (!signature || typeof signature !== 'string' || signature.trim() === '') {
+      console.error(`[StorageAgent] REJECTED: Mandatory cryptographic signature missing for command ${commandId} (${commandType})`);
+      this.send({
+        type: 'COMMAND_REPLY',
+        commandId,
+        status: 'FAILED',
+        error: 'Security Violation: Mandatory cryptographic signature missing'
+      });
+      return;
     }
 
-    // 2. Check expiration
+    // 2. Check Expiration Deadline
     if (expiresAt && new Date(expiresAt) < new Date()) {
       console.warn(`[StorageAgent] Command ${commandId} (${commandType}) has expired. Skipping execution.`);
       this.send({
@@ -230,18 +305,57 @@ export class AgentClient {
       return;
     }
 
-    // 3. Idempotency check: Return cached result for identical command
-    if (idempotencyKey && this.executedCommands.has(idempotencyKey)) {
-      console.log(`[StorageAgent] Returning cached result for idempotencyKey: ${idempotencyKey}`);
+    // 3. Cryptographic Signature Verification (Ed25519 & HMAC fallback)
+    const signData = `${commandId}|${commandType}|${idempotencyKey || ''}|${expiresAt}|${JSON.stringify(payload || {})}`;
+    
+    // Check Ed25519 Signature first
+    let isSignatureValid = false;
+    if (this.cryptoEngine.verifyServerSignature(signData, signature, serverPublicKey)) {
+      isSignatureValid = true;
+    } else {
+      // Check legacy/fallback HMAC-SHA256 signature
+      try {
+        const expectedHmac = crypto.createHmac('sha256', this.agentSecret).update(signData).digest('hex');
+        const sigBuffer = Buffer.from(signature);
+        const expectedBuffer = Buffer.from(expectedHmac);
+        if (sigBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
+          isSignatureValid = true;
+        }
+      } catch (e) {}
+    }
+
+    if (!isSignatureValid) {
+      console.error(`[StorageAgent] REJECTED: Invalid cryptographic signature for command ${commandId} (${commandType})`);
       this.send({
         type: 'COMMAND_REPLY',
         commandId,
-        status: 'EXECUTED',
-        payload: this.executedCommands.get(idempotencyKey)
+        status: 'FAILED',
+        error: 'Invalid cryptographic command signature'
       });
       return;
     }
 
+    // 4. Durable Idempotency Check (SEC-04)
+    const recordKey = idempotencyKey || commandId;
+    const startRecord = this.journal.recordCommandStart(
+      commandId,
+      commandType,
+      recordKey,
+      crypto.createHash('sha256').update(JSON.stringify(payload || {})).digest('hex')
+    );
+
+    if (startRecord.isDuplicate) {
+      console.log(`[StorageAgent] Returning cached durable result for idempotencyKey: ${recordKey}`);
+      this.send({
+        type: 'COMMAND_REPLY',
+        commandId,
+        status: 'EXECUTED',
+        payload: startRecord.record.result
+      });
+      return;
+    }
+
+    // 5. Strictly Bounded Command Dispatch (Zero Arbitrary PowerShell)
     try {
       let result = null;
 
@@ -279,9 +393,8 @@ export class AgentClient {
           throw new Error(`Forbidden or Unknown Command Type: ${commandType}`);
       }
 
-      if (idempotencyKey) {
-        this.executedCommands.set(idempotencyKey, result);
-      }
+      // Record durable completion
+      this.journal.recordCommandComplete(commandId, recordKey, result);
 
       this.send({
         type: 'COMMAND_REPLY',
@@ -291,6 +404,7 @@ export class AgentClient {
       });
     } catch (err) {
       console.error(`[StorageAgent] Command execution failed [${commandType} - ${commandId}]:`, err.message);
+      this.journal.recordCommandFailure(commandId, recordKey, err.message);
       this.send({
         type: 'COMMAND_REPLY',
         commandId,
@@ -300,3 +414,5 @@ export class AgentClient {
     }
   }
 }
+
+export default AgentClient;

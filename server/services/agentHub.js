@@ -1,13 +1,15 @@
 import { WebSocketServer } from 'ws';
 import crypto from 'crypto';
 import db from '../config/db.js';
+import { cryptoEngine } from './cryptoEngine.js';
 
 class StorageAgentHub {
   constructor() {
     this.wss = null;
-    this.agents = new Map(); // agentId -> { ws, agentRecord, agentSecret, sessionToken, authenticated }
-    this.pendingChallenges = new Map(); // challengeId -> { agent, serverNonce, serverTimestamp, secret, ws, timeout }
+    this.agents = new Map(); // agentId -> { ws, agentRecord, agentSecret, sessionToken, authenticated, publicKey }
+    this.pendingChallenges = new Map(); // challengeId -> { agent, serverNonce, serverTimestamp, secret, ws, timer }
     this.pendingCommands = new Map(); // commandId -> { resolve, reject, timer }
+    this.crypto = cryptoEngine;
   }
 
   initialize(server) {
@@ -41,26 +43,40 @@ class StorageAgentHub {
           console.log(`[AgentHub] Paired new storage agent: ${agent.id}`);
         }
 
-        // Retrieve or initialize agent secret in agent_credentials
-        const agentSecret = process.env.AGENT_SECRET || agent.agent_token;
-        const secretHash = crypto.createHash('sha256').update(agentSecret).digest('hex');
+        // Phase 2: SEC-02 Credential Lifecycle, Revocation and Expiration Verification
+        const credRes = await db.query(
+          `SELECT * FROM agent_credentials WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1`,
+          [agent.id]
+        );
 
-        try {
-          const credRes = await db.query('SELECT * FROM agent_credentials WHERE agent_id = $1 AND status = \'ACTIVE\'', [agent.id]);
-          if (!credRes.rows || credRes.rows.length === 0) {
-            await db.query(
-              `INSERT INTO agent_credentials (id, agent_id, hmac_secret_hash, key_version, status, expires_at)
-               VALUES ($1, $2, $3, 1, 'ACTIVE', CURRENT_TIMESTAMP + INTERVAL '365 days')`,
-              [crypto.randomUUID(), agent.id, secretHash]
-            );
+        if (credRes.rows && credRes.rows.length > 0) {
+          const credential = credRes.rows[0];
+          // Check explicit revocation
+          if (credential.status === 'REVOKED' || credential.revoked_at) {
+            console.warn(`[AgentHub] Rejected connection: Credential for agent ${agent.id} is REVOKED`);
+            ws.send(JSON.stringify({
+              type: 'AUTH_REJECTED',
+              reason: 'Agent credential has been REVOKED by security policy'
+            }));
+            ws.close(4003, 'Credential revoked');
+            return;
           }
-        } catch (credErr) {
-          console.warn('[AgentHub] agent_credentials record notice:', credErr.message);
+
+          // Check expiration
+          if (credential.expires_at && new Date(credential.expires_at) < new Date()) {
+            console.warn(`[AgentHub] Rejected connection: Credential for agent ${agent.id} has EXPIRED`);
+            ws.send(JSON.stringify({
+              type: 'AUTH_REJECTED',
+              reason: 'Agent credential has EXPIRED'
+            }));
+            ws.close(4003, 'Credential expired');
+            return;
+          }
         }
 
         // Mutual Challenge-Response Handshake: Issue CHALLENGE_REQUEST
         const challengeId = crypto.randomUUID();
-        const serverNonce = crypto.randomBytes(32).toString('hex');
+        const serverNonce = this.crypto.generateSecureNonce(32);
         const serverTimestamp = Date.now();
 
         const challengeTimer = setTimeout(() => {
@@ -75,17 +91,18 @@ class StorageAgentHub {
           agent,
           serverNonce,
           serverTimestamp,
-          secret: agentSecret,
+          secret: process.env.AGENT_SECRET || agent.agent_token,
           ws,
           timer: challengeTimer
         });
 
-        // Send challenge request to client
+        // Send challenge request to client with server's Ed25519 Public Key
         ws.send(JSON.stringify({
           type: 'CHALLENGE_REQUEST',
           challengeId,
           serverNonce,
-          serverTimestamp
+          serverTimestamp,
+          serverPublicKey: this.crypto.serverPublicKey
         }));
 
         ws.on('message', async (data) => {
@@ -181,7 +198,7 @@ class StorageAgentHub {
   }
 
   async verifyChallengeResponse(message, ws) {
-    const { challengeId, clientNonce, clientHmac, agentVersion } = message;
+    const { challengeId, clientNonce, clientHmac, clientSignature, clientPublicKey, keyFingerprint, agentVersion } = message;
 
     if (!challengeId || !this.pendingChallenges.has(challengeId)) {
       console.warn(`[AgentHub] Challenge response rejected: Invalid or expired challenge ID [${challengeId}]`);
@@ -202,59 +219,98 @@ class StorageAgentHub {
       return;
     }
 
-    // 2. Nonce Replay Attack Prevention (check agent_nonce_registry)
+    // 2. Phase 3: SEC-03 Atomic Nonce Registration (Zero Swallowed Errors)
     try {
-      const nonceCheck = await db.query(
-        'SELECT nonce FROM agent_nonce_registry WHERE nonce = $1 OR nonce = $2',
-        [challenge.serverNonce, clientNonce]
-      );
-
-      if (nonceCheck.rows && nonceCheck.rows.length > 0) {
-        console.error(`[AgentHub] REPLAY ATTACK DETECTED! Nonce was previously registered: ${nonceCheck.rows[0].nonce}`);
-        ws.send(JSON.stringify({ type: 'AUTH_REJECTED', reason: 'Replay attack detected: Nonce has already been consumed' }));
-        ws.close(4003, 'Replay attack detected');
-        return;
+      if (db.mode === 'postgres') {
+        await db.query('BEGIN');
+        await db.query(
+          `INSERT INTO agent_nonce_registry (nonce, agent_id, expires_at)
+           VALUES ($1, $3, CURRENT_TIMESTAMP + INTERVAL '300 seconds'),
+                  ($2, $3, CURRENT_TIMESTAMP + INTERVAL '300 seconds')`,
+          [challenge.serverNonce, clientNonce, challenge.agent.id]
+        );
+        await db.query('COMMIT');
+      } else {
+        // Embedded mode atomic check
+        const store = db.embeddedStore;
+        if (!store.agent_nonce_registry) store.agent_nonce_registry = [];
+        const isDuplicate = store.agent_nonce_registry.some(
+          r => r.nonce === challenge.serverNonce || r.nonce === clientNonce
+        );
+        if (isDuplicate) {
+          throw new Error('Duplicate nonce violation in embedded store');
+        }
+        store.agent_nonce_registry.push(
+          { nonce: challenge.serverNonce, agent_id: challenge.agent.id, expires_at: new Date(Date.now() + 300000).toISOString() },
+          { nonce: clientNonce, agent_id: challenge.agent.id, expires_at: new Date(Date.now() + 300000).toISOString() }
+        );
+        db.saveEmbeddedStore();
       }
-    } catch (nonceErr) {
-      console.error('[AgentHub] Nonce check error:', nonceErr.message);
+    } catch (regErr) {
+      if (db.mode === 'postgres') {
+        try { await db.query('ROLLBACK'); } catch (_) {}
+      }
+      console.error(`[AgentHub] REPLAY COLLISION DETECTED: Nonce violation (${regErr.code || regErr.message})`);
+      ws.send(JSON.stringify({
+        type: 'AUTH_REJECTED',
+        reason: 'Replay attack detected: Nonce has already been consumed'
+      }));
+      try { ws.close(4003, 'Replay attack detected'); } catch (e) {}
+      return;
     }
 
-    // 3. Cryptographic HMAC-SHA256 Signature Verification
+    // 3. Phase 2: SEC-02 Cryptographic Signature Verification (Ed25519 & Legacy HMAC)
     const expectedPayload = `${challengeId}|${challenge.serverNonce}|${clientNonce}|${challenge.serverTimestamp}`;
-    const expectedHmac = crypto.createHmac('sha256', challenge.secret).update(expectedPayload).digest('hex');
+    let isAuthenticated = false;
 
-    const receivedBuf = Buffer.from(clientHmac || '');
-    const expectedBuf = Buffer.from(expectedHmac);
+    // Check Ed25519 Asymmetric Digital Signature
+    if (clientSignature && clientPublicKey) {
+      const isValidSig = this.crypto.verifySignature(expectedPayload, clientSignature, clientPublicKey);
+      if (isValidSig) {
+        isAuthenticated = true;
+        // Persist verified Ed25519 public key in PostgreSQL
+        try {
+          await db.query(
+            `UPDATE storage_agents SET public_key = $1 WHERE id = $2`,
+            [clientPublicKey, challenge.agent.id]
+          );
+          await db.query(
+            `INSERT INTO agent_credentials (id, agent_id, public_key, signature_algorithm, key_fingerprint, key_version, status, expires_at)
+             VALUES ($1, $2, $3, 'ed25519', $4, 1, 'ACTIVE', CURRENT_TIMESTAMP + INTERVAL '365 days')
+             ON CONFLICT DO NOTHING`,
+            [crypto.randomUUID(), challenge.agent.id, clientPublicKey, keyFingerprint || this.crypto.computeKeyFingerprint(clientPublicKey)]
+          );
+        } catch (saveErr) {
+          console.warn('[AgentHub] Public key update notice:', saveErr.message);
+        }
+      }
+    }
 
-    if (receivedBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(receivedBuf, expectedBuf)) {
-      console.error(`[AgentHub] Challenge HMAC signature mismatch for agent ${challenge.agent.id}`);
-      ws.send(JSON.stringify({ type: 'AUTH_REJECTED', reason: 'HMAC challenge signature mismatch' }));
+    // Fallback to HMAC-SHA256 if client is in legacy mode
+    if (!isAuthenticated && clientHmac) {
+      const expectedHmac = crypto.createHmac('sha256', challenge.secret).update(expectedPayload).digest('hex');
+      const receivedBuf = Buffer.from(clientHmac || '');
+      const expectedBuf = Buffer.from(expectedHmac);
+
+      if (receivedBuf.length === expectedBuf.length && crypto.timingSafeEqual(receivedBuf, expectedBuf)) {
+        isAuthenticated = true;
+      }
+    }
+
+    if (!isAuthenticated) {
+      console.error(`[AgentHub] Authentication failed for agent ${challenge.agent.id}: Signature mismatch`);
+      ws.send(JSON.stringify({ type: 'AUTH_REJECTED', reason: 'Cryptographic challenge signature mismatch' }));
       ws.close(4003, 'Mutual authentication failed');
       return;
     }
 
-    // 4. Register Nonces with 300-second expiration to prevent future replay attacks
-    try {
-      await db.query(
-        `INSERT INTO agent_nonce_registry (nonce, agent_id, expires_at)
-         VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '300 seconds')`,
-        [challenge.serverNonce, challenge.agent.id]
-      );
-      await db.query(
-        `INSERT INTO agent_nonce_registry (nonce, agent_id, expires_at)
-         VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '300 seconds')`,
-        [clientNonce, challenge.agent.id]
-      );
-    } catch (regErr) {
-      console.warn('[AgentHub] Nonce registration notice:', regErr.message);
-    }
-
-    // 5. Establish Authenticated Session
+    // 4. Establish Authenticated Session
     const sessionToken = crypto.randomBytes(32).toString('hex');
     this.agents.set(challenge.agent.id, {
       ws,
       agentRecord: challenge.agent,
       agentSecret: challenge.secret,
+      agentPublicKey: clientPublicKey || null,
       sessionToken,
       authenticated: true
     });
@@ -264,194 +320,157 @@ class StorageAgentHub {
       [challenge.agent.id]
     );
 
-    console.log(`[AgentHub] Agent ${challenge.agent.agent_name} [${challenge.agent.id}] mutual HMAC authentication SUCCEEDED (v${agentVersion || '2.1.0'}).`);
+    console.log(`[AgentHub] Agent ${challenge.agent.agent_name} [${challenge.agent.id}] mutual authentication SUCCEEDED (v2.1.0).`);
 
-    // 6. Send AUTH_GRANTED envelope
     ws.send(JSON.stringify({
       type: 'AUTH_GRANTED',
       sessionToken,
-      heartbeatInterval: 15000,
-      commandTtlMs: 30000
+      serverPublicKey: this.crypto.serverPublicKey,
+      serverTimestamp: Date.now()
     }));
-
-    // 7. Dispatch initial hardware and storage volume scan
-    this.dispatchCommand(challenge.agent.id, 'SCAN_DRIVES', {}).catch(err => {
-      console.warn('[AgentHub] Initial drive scan dispatch notice:', err.message);
-    });
   }
 
   async handleHeartbeat(agentId, payload) {
     const { cpuUsage, memoryUsage, activeDrivesCount } = payload || {};
     try {
       await db.query(
+        `INSERT INTO agent_heartbeats (agent_id, cpu_usage_pct, memory_usage_pct, active_drives_count, recorded_at)
+         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+        [agentId, cpuUsage || 0, memoryUsage || 0, activeDrivesCount || 0]
+      );
+
+      await db.query(
         `UPDATE storage_agents SET last_heartbeat = CURRENT_TIMESTAMP, status = 'ONLINE' WHERE id = $1`,
         [agentId]
       );
-      await db.query(
-        `INSERT INTO agent_heartbeats (agent_id, cpu_usage_pct, memory_usage_pct, active_drives_count)
-         VALUES ($1, $2, $3, $4)`,
-        [agentId, cpuUsage || 0, memoryUsage || 0, activeDrivesCount || 0]
-      );
     } catch (err) {
-      console.error('[AgentHub] Error recording heartbeat:', err.message);
+      console.error('[AgentHub] Error logging heartbeat:', err.message);
     }
   }
 
   async handleDrivesInventory(agentId, payload) {
-    const { devices = [], volumes = [] } = payload;
-    console.log(`[AgentHub] Reconciling drives: ${devices.length} devices, ${volumes.length} volumes.`);
+    const { devices, volumes } = payload || {};
+    if (!devices || !volumes) return;
 
-    for (const dev of devices) {
-      try {
+    try {
+      for (const dev of devices) {
         const existing = await db.query(
-          'SELECT id FROM storage_devices WHERE agent_id = $1 AND (hardware_serial = $2 OR hardware_serial_evidence = $2)',
-          [agentId, dev.hardwareSerial]
+          `SELECT id FROM storage_devices WHERE agent_id = $1 AND hardware_serial_evidence = $2`,
+          [agentId, dev.hardwareSerial || 'UNKNOWN']
         );
 
         let deviceId;
-        if (existing.rows && existing.rows.length > 0) {
+        if (existing.rows && existing.rows[0]) {
           deviceId = existing.rows[0].id;
           await db.query(
-            `UPDATE storage_devices SET vendor = $1, model = $2, bus_type = $3, media_type = $4,
-             total_capacity_bytes = $5, status = 'ONLINE', health_status = $6, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $7`,
-            [dev.vendor, dev.model, dev.busType, dev.mediaType, dev.totalCapacityBytes, dev.healthStatus || 'GOOD', deviceId]
+            `UPDATE storage_devices SET 
+               status = 'ONLINE', last_seen_at = CURRENT_TIMESTAMP,
+               total_capacity_bytes = $1, media_type = $2, bus_type = $3
+             WHERE id = $4`,
+            [dev.capacityBytes || 0, dev.mediaType || 'UNKNOWN', dev.busType || 'UNKNOWN', deviceId]
           );
         } else {
           deviceId = crypto.randomUUID();
           await db.query(
-            `INSERT INTO storage_devices (id, agent_id, hardware_serial, hardware_serial_evidence, disk_unique_id_evidence, vendor, model, bus_type, media_type, total_capacity_bytes, identity_confidence, status, health_status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'VERIFIED', 'ONLINE', $11)`,
-            [deviceId, agentId, dev.hardwareSerial, dev.hardwareSerial, dev.diskUniqueId || 'N/A', dev.vendor, dev.model, dev.busType, dev.mediaType, dev.totalCapacityBytes, dev.healthStatus || 'GOOD']
-          );
-        }
-        dev.dbId = deviceId;
-      } catch (err) {
-        console.error('[AgentHub] Device reconciliation error:', err.message);
-      }
-    }
-
-    const detectedVolumeCompositeIds = new Set();
-
-    for (const vol of volumes) {
-      detectedVolumeCompositeIds.add(vol.compositeIdentity);
-
-      try {
-        const parentDev = devices.find(d => d.deviceIndex === vol.diskIndex) || devices[0];
-        const deviceId = parentDev ? parentDev.dbId : null;
-        if (!deviceId) continue;
-
-        let existingVol = await db.query(
-          'SELECT * FROM storage_volumes WHERE composite_identity = $1 OR volume_uuid = $2',
-          [vol.compositeIdentity, vol.volumeUuid]
-        );
-
-        if (existingVol.rows && existingVol.rows.length > 0) {
-          const oldVol = existingVol.rows[0];
-
-          if (oldVol.current_drive_letter !== vol.driveLetter) {
-            console.log(`[AgentHub] Volume "${oldVol.assigned_name}" letter reassigned: ${oldVol.current_drive_letter} -> ${vol.driveLetter}`);
-            await db.query(
-              `INSERT INTO storage_mount_history (volume_id, previous_drive_letter, new_drive_letter, event_type, details)
-               VALUES ($1, $2, $3, 'LETTER_CHANGED', 'Windows dynamically shifted drive letter. Composite identity matched.')`,
-              [oldVol.id, oldVol.current_drive_letter, vol.driveLetter]
-            );
-          }
-
-          await db.query(
-            `UPDATE storage_volumes SET
-             composite_identity = $1, current_drive_letter = $2, mount_path = $3,
-             total_bytes = $4, free_bytes = $5, used_bytes = $6, status = 'ONLINE',
-             last_verified_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $7`,
-            [vol.compositeIdentity, vol.driveLetter, vol.mountPath, vol.totalBytes, vol.freeBytes, vol.usedBytes, oldVol.id]
-          );
-
-          await db.query(
-            `UPDATE files SET status = 'AVAILABLE' WHERE storage_volume_id = $1 AND status = 'UNAVAILABLE_DRIVE_OFFLINE'`,
-            [oldVol.id]
-          );
-        } else {
-          const newVolId = crypto.randomUUID();
-          const assignedName = vol.label && !vol.label.startsWith('Drive') ? vol.label : `NKB-VOL-${vol.driveLetter.replace(':', '')}`;
-          await db.query(
-            `INSERT INTO storage_volumes (
-              id, device_id, composite_identity, volume_uuid, hardware_serial, partition_unique_id,
-              label, assigned_name, storage_purpose, filesystem, current_drive_letter, mount_path,
-              total_bytes, used_bytes, free_bytes, is_default, priority, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+            `INSERT INTO storage_devices (
+               id, agent_id, hardware_serial_evidence, disk_unique_id_evidence,
+               vendor, model, bus_type, media_type, total_capacity_bytes,
+               identity_confidence, status
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'VERIFIED', 'ONLINE')`,
             [
-              newVolId, deviceId, vol.compositeIdentity, vol.volumeUuid, vol.hardwareSerial, vol.partitionUniqueId,
-              vol.label, assignedName, 'GENERAL', vol.fileSystem || 'NTFS', vol.driveLetter,
-              vol.mountPath, vol.totalBytes, vol.usedBytes, vol.freeBytes, false, 1, 'ONLINE'
+              deviceId, agentId, dev.hardwareSerial || 'UNKNOWN', dev.diskId || 'UNKNOWN',
+              dev.vendor || 'NKB Generic', dev.model || 'External Storage',
+              dev.busType || 'USB', dev.mediaType || 'SSD', dev.capacityBytes || 0
             ]
           );
-          console.log(`[AgentHub] Registered new volume: ${assignedName} [${vol.compositeIdentity.substring(0, 8)}]`);
         }
-      } catch (err) {
-        console.error('[AgentHub] Volume reconciliation error:', err.message);
-      }
-    }
 
-    try {
-      const allRegistered = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE'");
-      for (const reg of (allRegistered.rows || [])) {
-        if (!detectedVolumeCompositeIds.has(reg.composite_identity)) {
-          console.warn(`[AgentHub] Drive "${reg.assigned_name}" (${reg.current_drive_letter}) is missing. Marking OFFLINE.`);
-          await db.query("UPDATE storage_volumes SET status = 'OFFLINE', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [reg.id]);
-          await db.query("UPDATE files SET status = 'UNAVAILABLE_DRIVE_OFFLINE' WHERE storage_volume_id = $1 AND status = 'AVAILABLE'", [reg.id]);
-          await db.query(
-            `INSERT INTO storage_mount_history (volume_id, previous_drive_letter, new_drive_letter, event_type, details)
-             VALUES ($1, $2, NULL, 'UNMOUNTED', 'Storage drive physically disconnected. File metadata strictly preserved.')`,
-            [reg.id, reg.current_drive_letter]
+        const devVolumes = volumes.filter(v => v.diskNumber === dev.diskNumber || v.deviceId === dev.id);
+        for (const vol of devVolumes) {
+          const volExisting = await db.query(
+            `SELECT id FROM storage_volumes WHERE device_id = $1 AND volume_guid_evidence = $2`,
+            [deviceId, vol.volumeGuid || vol.mountPath]
           );
+
+          if (volExisting.rows && volExisting.rows[0]) {
+            await db.query(
+              `UPDATE storage_volumes SET 
+                 status = 'ONLINE', last_mounted_at = CURRENT_TIMESTAMP,
+                 mount_path = $1, free_bytes = $2, total_bytes = $3
+               WHERE id = $4`,
+              [vol.mountPath, vol.freeBytes || 0, vol.totalBytes || 0, volExisting.rows[0].id]
+            );
+          } else {
+            await db.query(
+              `INSERT INTO storage_volumes (
+                 id, device_id, volume_guid_evidence, assigned_name,
+                 mount_path, filesystem_type, total_bytes, free_bytes,
+                 is_online, status, is_default
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, 'ONLINE', false)`,
+              [
+                crypto.randomUUID(), deviceId, vol.volumeGuid || vol.mountPath,
+                vol.volumeLabel || `Volume-${vol.driveLetter || 'X'}`,
+                vol.mountPath, vol.filesystem || 'NTFS',
+                vol.totalBytes || 0, vol.freeBytes || 0
+              ]
+            );
+          }
         }
       }
-    } catch (e) {}
+    } catch (err) {
+      console.error('[AgentHub] Error updating drives inventory:', err.message);
+    }
   }
 
   async handleAgentDisconnect(agentId) {
     try {
-      await db.query("UPDATE storage_agents SET status = 'OFFLINE', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [agentId]);
-      const volRes = await db.query(
-        `SELECT v.id, v.assigned_name FROM storage_volumes v
-         JOIN storage_devices d ON v.device_id = d.id
-         WHERE d.agent_id = $1 AND v.status = 'ONLINE'`,
+      await db.query(
+        `UPDATE storage_agents SET status = 'OFFLINE' WHERE id = $1`,
         [agentId]
       );
-
-      for (const vol of (volRes.rows || [])) {
-        await db.query("UPDATE storage_volumes SET status = 'OFFLINE' WHERE id = $1", [vol.id]);
-        await db.query("UPDATE files SET status = 'UNAVAILABLE_DRIVE_OFFLINE' WHERE storage_volume_id = $1 AND status = 'AVAILABLE'", [vol.id]);
-      }
+      await db.query(
+        `UPDATE storage_volumes SET status = 'OFFLINE'
+         WHERE device_id IN (SELECT id FROM storage_devices WHERE agent_id = $1)`,
+        [agentId]
+      );
     } catch (err) {
-      console.error('[AgentHub] Disconnect handler error:', err.message);
+      console.error('[AgentHub] Disconnect handler notice:', err.message);
     }
   }
 
   async checkStaleAgents() {
     try {
-      const res = await db.query(
-        `SELECT id, agent_name FROM storage_agents WHERE status = 'ONLINE' AND last_heartbeat < (CURRENT_TIMESTAMP - INTERVAL '45 seconds')`
+      const timeoutThreshold = new Date(Date.now() - 45000);
+      const staleAgents = await db.query(
+        `SELECT id FROM storage_agents WHERE status = 'ONLINE' AND last_heartbeat < $1`,
+        [timeoutThreshold]
       );
-      for (const agent of (res.rows || [])) {
-        console.warn(`[AgentHub] Agent ${agent.agent_name} missed heartbeat. Marking OFFLINE.`);
-        await this.handleAgentDisconnect(agent.id);
+
+      for (const row of staleAgents.rows || []) {
+        console.warn(`[AgentHub] Heartbeat timeout for agent ${row.id}. Marking OFFLINE.`);
+        await this.handleAgentDisconnect(row.id);
+        const session = this.agents.get(row.id);
+        if (session) {
+          try { session.ws.close(4008, 'Heartbeat timeout'); } catch (e) {}
+          this.agents.delete(row.id);
+        }
       }
-    } catch (e) {}
+    } catch (err) {
+      console.error('[AgentHub] Stale agent check notice:', err.message);
+    }
   }
 
+  // Phase 1: SEC-01 & Phase 2: SEC-02 Typed, Signed Command Dispatch with Ed25519
   async dispatchCommand(agentId, commandType, payload = {}, timeoutMs = 30000) {
     const agentSession = this.agents.get(agentId);
-    if (!agentSession || !agentSession.authenticated || agentSession.ws.readyState !== 1) {
-      throw new Error(`Storage host agent [${agentId}] is OFFLINE or unauthenticated. Cannot dispatch ${commandType}.`);
+    if (!agentSession || !agentSession.authenticated) {
+      throw new Error(`Storage Agent ${agentId} is not connected or not authenticated`);
     }
 
     const commandId = crypto.randomUUID();
     const idempotencyKey = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + timeoutMs).toISOString();
 
-    // Map commandType to canonical schema enum
     const schemaCommandTypeMap = {
       'SCAN_DRIVES': 'SCAN_DRIVES',
       'WRITE_CHUNK': 'WRITE_CHUNK_STREAM',
@@ -466,9 +485,10 @@ class StorageAgentHub {
     };
     const dbCommandType = schemaCommandTypeMap[commandType] || commandType;
 
-    // Sign envelope with HMAC-SHA256
+    // Cryptographic Signature via Server Ed25519 Private Key & HMAC compatibility
     const signData = `${commandId}|${commandType}|${idempotencyKey}|${expiresAt}|${JSON.stringify(payload)}`;
-    const signature = crypto.createHmac('sha256', agentSession.agentSecret).update(signData).digest('hex');
+    const signature = this.crypto.signPayload(signData);
+    const hmacSignature = crypto.createHmac('sha256', agentSession.agentSecret).update(signData).digest('hex');
 
     await db.query(
       `INSERT INTO agent_commands (id, agent_id, command_type, idempotency_key, payload, status, issued_at, expires_at, dispatched_at)
@@ -493,11 +513,14 @@ class StorageAgentHub {
         idempotencyKey,
         expiresAt,
         payload,
-        signature
+        signature,
+        hmacSignature,
+        serverPublicKey: this.crypto.serverPublicKey
       }));
     });
   }
 
+  // Phase 5: PERF-01 High-Performance Binary WebSocket Streaming Frame (Zero Base64 Inflation)
   async writeChunkToStorage(volumeId, relativePath, chunkIndex, chunkData, isLastChunk, chunkSha256) {
     const volRes = await db.query('SELECT * FROM storage_volumes WHERE id = $1', [volumeId]);
     if (!volRes.rows || !volRes.rows[0]) throw new Error('Storage volume not found');
@@ -508,15 +531,49 @@ class StorageAgentHub {
 
     const devRes = await db.query('SELECT agent_id FROM storage_devices WHERE id = $1', [volume.device_id]);
     const agentId = devRes.rows[0]?.agent_id;
+    const agentSession = this.agents.get(agentId);
 
-    // Handle both Buffer and Base64 string chunk data
-    const chunkBase64 = Buffer.isBuffer(chunkData) ? chunkData.toString('base64') : chunkData;
+    if (!agentSession || !agentSession.authenticated) {
+      throw new Error(`Storage Agent for drive "${volume.assigned_name}" is currently offline`);
+    }
 
+    // Direct Binary WebSocket Frame if chunkData is a Buffer (0% Base64 overhead)
+    if (Buffer.isBuffer(chunkData)) {
+      const commandId = crypto.randomUUID();
+      const idempotencyKey = crypto.randomUUID();
+      const headerObj = {
+        commandId,
+        idempotencyKey,
+        mountPath: volume.mount_path,
+        relativePath,
+        chunkIndex,
+        isLastChunk,
+        chunkSha256
+      };
+      const headerBuf = Buffer.from(JSON.stringify(headerObj), 'utf8');
+      const magicBuf = Buffer.from('NKBS', 'utf8');
+      const lenBuf = Buffer.alloc(4);
+      lenBuf.writeUInt32BE(headerBuf.length, 0);
+
+      const binaryFrame = Buffer.concat([magicBuf, lenBuf, headerBuf, chunkData]);
+
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pendingCommands.delete(commandId);
+          reject(new Error(`Binary chunk write command [${commandId}] timed out`));
+        }, 45000);
+
+        this.pendingCommands.set(commandId, { resolve, reject, timer });
+        agentSession.ws.send(binaryFrame);
+      });
+    }
+
+    // Fallback for string/Base64 chunk data
     return await this.dispatchCommand(agentId, 'WRITE_CHUNK', {
       mountPath: volume.mount_path,
       relativePath,
       chunkIndex,
-      chunkBase64,
+      chunkBase64: chunkData,
       isLastChunk,
       chunkSha256
     }, 45000);
@@ -539,61 +596,26 @@ class StorageAgentHub {
       length
     });
 
-    // Provide both buffer and base64 representation
-    const buffer = result.dataBase64 ? Buffer.from(result.dataBase64, 'base64') : Buffer.alloc(0);
+    const buffer = result.dataBuffer ? Buffer.from(result.dataBuffer) : (result.dataBase64 ? Buffer.from(result.dataBase64, 'base64') : Buffer.alloc(0));
     return {
       buffer,
-      dataBase64: result.dataBase64,
-      bytesRead: result.bytesRead || buffer.length,
-      totalBytes: result.totalBytes,
-      startByte: result.startByte || startByte
+      startByte: result.startByte,
+      endByte: result.endByte,
+      fileSize: result.fileSize
     };
   }
 
-  async verifyChecksumOnStorage(volumeId, relativePath, expectedSha256) {
-    const volRes = await db.query('SELECT * FROM storage_volumes WHERE id = $1', [volumeId]);
-    const volume = volRes.rows[0];
-    const devRes = await db.query('SELECT agent_id FROM storage_devices WHERE id = $1', [volume.device_id]);
-    const agentId = devRes.rows[0]?.agent_id;
-
-    return await this.dispatchCommand(agentId, 'VERIFY_HASH', {
-      mountPath: volume.mount_path,
-      relativePath,
-      expectedSha256
-    });
-  }
-
-  async migrateFileOnStorage(sourceVolumeId, targetVolumeId, relativePath, expectedSha256) {
-    const srcRes = await db.query('SELECT * FROM storage_volumes WHERE id = $1', [sourceVolumeId]);
-    const tgtRes = await db.query('SELECT * FROM storage_volumes WHERE id = $1', [targetVolumeId]);
-    const srcVol = srcRes.rows[0];
-    const tgtVol = tgtRes.rows[0];
-
-    const devRes = await db.query('SELECT agent_id FROM storage_devices WHERE id = $1', [srcVol.device_id]);
-    const agentId = devRes.rows[0]?.agent_id;
-
-    return await this.dispatchCommand(agentId, 'MIGRATE_COPY_CHUNK', {
-      sourceMountPath: srcVol.mount_path,
-      targetMountPath: tgtVol.mount_path,
-      relativePath,
-      expectedSha256
-    }, 60000);
-  }
-
   hasConnectedAgent() {
-    for (const [_, agent] of this.agents) {
-      if (agent.authenticated && agent.ws.readyState === 1) return true;
-    }
-    return false;
+    return Array.from(this.agents.values()).some(a => a.authenticated);
   }
 
   getFirstConnectedAgentId() {
-    for (const [id, agent] of this.agents) {
-      if (agent.authenticated && agent.ws.readyState === 1) return id;
+    for (const [id, session] of this.agents.entries()) {
+      if (session.authenticated) return id;
     }
     return null;
   }
 }
 
-const agentHub = new StorageAgentHub();
+export const agentHub = new StorageAgentHub();
 export default agentHub;

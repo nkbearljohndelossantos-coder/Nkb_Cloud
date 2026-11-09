@@ -73,5 +73,7 @@ router.get('/admin/audit-logs', authenticateToken, requireRole('SUPER ADMIN', 'A
 router.get('/admin/settings', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.getSystemSettings);
 router.put('/admin/settings/:key', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.updateSystemSetting);
 router.post('/admin/agent-token', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.generateAgentPairingToken);
+router.post('/admin/agents/:agentId/revoke', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.revokeAgentCredential);
+router.post('/admin/agents/:agentId/rotate-key', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.rotateAgentKey);
 
 export default router;

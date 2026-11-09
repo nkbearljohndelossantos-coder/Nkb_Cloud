@@ -7,4 +7,10 @@ storage-agent/node_modules/
 *.log
 local_storage/
 test_storage/
+temp_*/
+.keys/
+.agent_keys/
+server/.keys/
+storage-agent/.agent_keys/
+storage-agent/data/
 .DS_Store

@@ -170,8 +170,8 @@
       "agent_token": "nkb_token_stage2_verified",
       "status": "ONLINE",
       "created_at": "2026-11-09T03:34:49.966Z",
-      "updated_at": "2026-11-09T03:47:23.497Z",
-      "last_heartbeat": "2026-11-09T03:47:23.497Z"
+      "updated_at": "2026-11-09T04:00:19.738Z",
+      "last_heartbeat": "2026-11-09T04:00:19.738Z"
     },
     {
       "id": "54d506a2-1220-4d13-b562-fe121aa555c1",
@@ -199,6 +199,24 @@
       "status": "OFFLINE",
       "created_at": "2026-11-09T03:47:21.790Z",
       "updated_at": "2026-11-09T03:47:21.792Z"
+    },
+    {
+      "id": "e56ab9ad-2636-45fc-9026-2bf3d964df53",
+      "agent_name": "NKB-TEST-HOST",
+      "machine_name": "TEST-PC",
+      "agent_token": "nkb_token_stage2_verified",
+      "status": "OFFLINE",
+      "created_at": "2026-11-09T04:00:10.117Z",
+      "updated_at": "2026-11-09T04:00:10.117Z"
+    },
+    {
+      "id": "fcd0df44-aa35-4171-bee6-e8f7f6ed1126",
+      "agent_name": "NKB-TEST-HOST",
+      "machine_name": "TEST-PC",
+      "agent_token": "nkb_token_stage2_verified",
+      "status": "OFFLINE",
+      "created_at": "2026-11-09T04:00:17.993Z",
+      "updated_at": "2026-11-09T04:00:17.994Z"
     }
   ],
   "agent_credentials": [
@@ -251,6 +269,26 @@
       "expires_at": null,
       "created_at": "2026-11-09T03:47:22.193Z",
       "updated_at": "2026-11-09T03:47:22.193Z"
+    },
+    {
+      "id": "f363de4e-08fa-4bd6-9755-85d9241775c6",
+      "agent_id": "e56ab9ad-2636-45fc-9026-2bf3d964df53",
+      "hmac_secret_hash": "2ce476d73ff9c75a6d5abf77fdd8b847ea516565143466709345b53badd8fc6a",
+      "key_version": 1,
+      "status": "ACTIVE",
+      "expires_at": null,
+      "created_at": "2026-11-09T04:00:10.549Z",
+      "updated_at": "2026-11-09T04:00:10.549Z"
+    },
+    {
+      "id": "dc829958-2cfa-4cf7-996d-fd5fff5c8db2",
+      "agent_id": "fcd0df44-aa35-4171-bee6-e8f7f6ed1126",
+      "hmac_secret_hash": "2ce476d73ff9c75a6d5abf77fdd8b847ea516565143466709345b53badd8fc6a",
+      "key_version": 1,
+      "status": "ACTIVE",
+      "expires_at": null,
+      "created_at": "2026-11-09T04:00:18.426Z",
+      "updated_at": "2026-11-09T04:00:18.426Z"
     }
   ],
   "agent_nonce_registry": [
@@ -333,6 +371,38 @@
       "id": "bc4a5451-a7d8-45b3-91a5-ddfdfd5e5ce4",
       "created_at": "2026-11-09T03:47:23.055Z",
       "updated_at": "2026-11-09T03:47:23.055Z"
+    },
+    {
+      "nonce": "c1326dd55604c24cd4013284b2376f8d3bb8cc7cddc175de8e6e6f2de268a512",
+      "agent_id": "41216729-fc53-4414-9a4d-11cab7b94b14",
+      "expires_at": null,
+      "id": "2a279216-629f-4a56-a6a0-3c574b7bf566",
+      "created_at": "2026-11-09T04:00:11.002Z",
+      "updated_at": "2026-11-09T04:00:11.002Z"
+    },
+    {
+      "nonce": "40b0aba5405930cf466de009125a0d834fe4a48b50ef11e27f581e26ef40f978",
+      "agent_id": "41216729-fc53-4414-9a4d-11cab7b94b14",
+      "expires_at": null,
+      "id": "b7c9d9ed-a920-426c-b559-3cbc57c9042b",
+      "created_at": "2026-11-09T04:00:11.383Z",
+      "updated_at": "2026-11-09T04:00:11.383Z"
+    },
+    {
+      "nonce": "b4b0d6361400f14547cc234e00bc7c736173db6a28c68aa5aef1a74e5a0e771d",
+      "agent_id": "41216729-fc53-4414-9a4d-11cab7b94b14",
+      "expires_at": null,
+      "id": "3b5fd12b-7412-491d-809a-d2e1342bbd32",
+      "created_at": "2026-11-09T04:00:18.888Z",
+      "updated_at": "2026-11-09T04:00:18.888Z"
+    },
+    {
+      "nonce": "d99b43c828b43896489c2d32acb6a375b55616b96699a27cf847e81ef9a46d64",
+      "agent_id": "41216729-fc53-4414-9a4d-11cab7b94b14",
+      "expires_at": null,
+      "id": "c4d7bb20-161f-4ea5-a2e2-77beb6c52171",
+      "created_at": "2026-11-09T04:00:19.303Z",
+      "updated_at": "2026-11-09T04:00:19.303Z"
     }
   ],
   "agent_heartbeats": [
@@ -621,6 +691,58 @@
       "dispatched_at": null,
       "created_at": "2026-11-09T03:47:24.395Z",
       "updated_at": "2026-11-09T03:47:25.263Z"
+    },
+    {
+      "id": "e1f1286b-c877-4cbb-a153-8cd4d481a00e",
+      "agent_id": "41216729-fc53-4414-9a4d-11cab7b94b14",
+      "command_type": "SCAN_DRIVES",
+      "idempotency_key": "b00dd58a-c88c-4cd2-a9e8-9320a01e3ca0",
+      "payload": "{}",
+      "status": "DISPATCHED",
+      "issued_at": null,
+      "expires_at": "2026-11-09T04:00:42.255Z",
+      "dispatched_at": null,
+      "created_at": "2026-11-09T04:00:12.255Z",
+      "updated_at": "2026-11-09T04:00:12.255Z"
+    },
+    {
+      "id": "c28bff85-c010-4a1e-8948-1060ef597709",
+      "agent_id": "41216729-fc53-4414-9a4d-11cab7b94b14",
+      "command_type": "SCAN_DRIVES",
+      "idempotency_key": "c9ac5f3c-562e-4db5-ad47-e64a0fbfd817",
+      "payload": "{\"testFile\":\"audit_spec.docx\",\"sizeBytes\":1048576}",
+      "status": "EXECUTED",
+      "issued_at": null,
+      "expires_at": "2026-11-09T04:00:22.719Z",
+      "dispatched_at": null,
+      "created_at": "2026-11-09T04:00:12.719Z",
+      "updated_at": "2026-11-09T04:00:13.611Z"
+    },
+    {
+      "id": "3fbb22cb-4561-4866-ad84-5debecce119c",
+      "agent_id": "41216729-fc53-4414-9a4d-11cab7b94b14",
+      "command_type": "SCAN_DRIVES",
+      "idempotency_key": "3ff15699-9db4-4d05-b0fa-b9dbdb7cdd1f",
+      "payload": "{}",
+      "status": "DISPATCHED",
+      "issued_at": null,
+      "expires_at": "2026-11-09T04:00:50.178Z",
+      "dispatched_at": null,
+      "created_at": "2026-11-09T04:00:20.178Z",
+      "updated_at": "2026-11-09T04:00:20.178Z"
+    },
+    {
+      "id": "88f810e3-3c53-4efb-a619-6cb64809bbc3",
+      "agent_id": "41216729-fc53-4414-9a4d-11cab7b94b14",
+      "command_type": "SCAN_DRIVES",
+      "idempotency_key": "420b757b-6a43-4d21-b031-751f88163bed",
+      "payload": "{\"testFile\":\"audit_spec.docx\",\"sizeBytes\":1048576}",
+      "status": "EXECUTED",
+      "issued_at": null,
+      "expires_at": "2026-11-09T04:00:30.616Z",
+      "dispatched_at": null,
+      "created_at": "2026-11-09T04:00:20.616Z",
+      "updated_at": "2026-11-09T04:00:21.489Z"
     }
   ],
   "agent_command_results": [
@@ -663,6 +785,26 @@
       "executed_at": null,
       "created_at": "2026-11-09T03:47:24.832Z",
       "updated_at": "2026-11-09T03:47:24.832Z"
+    },
+    {
+      "id": "15653b5a-719e-48ed-86f5-70d5fc772000",
+      "command_id": "c28bff85-c010-4a1e-8948-1060ef597709",
+      "success": true,
+      "result_payload": "{\"echo\":{\"testFile\":\"audit_spec.docx\",\"sizeBytes\":1048576},\"signatureVerified\":true}",
+      "error_message": null,
+      "executed_at": null,
+      "created_at": "2026-11-09T04:00:13.162Z",
+      "updated_at": "2026-11-09T04:00:13.162Z"
+    },
+    {
+      "id": "2c4e0ead-bd3b-4ed7-8b54-2676f0f4f469",
+      "command_id": "88f810e3-3c53-4efb-a619-6cb64809bbc3",
+      "success": true,
+      "result_payload": "{\"echo\":{\"testFile\":\"audit_spec.docx\",\"sizeBytes\":1048576},\"signatureVerified\":true}",
+      "error_message": null,
+      "executed_at": null,
+      "created_at": "2026-11-09T04:00:21.052Z",
+      "updated_at": "2026-11-09T04:00:21.052Z"
     }
   ],
   "agent_command_queue": [

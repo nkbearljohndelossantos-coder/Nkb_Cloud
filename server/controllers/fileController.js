@@ -570,8 +570,25 @@ export async function downloadFile(req, res) {
     }
 
     if (agentHub.hasConnectedAgent()) {
-      const chunkRes = await agentHub.readChunkFromStorage(volume.id, file.relative_path, start, chunkLength);
-      res.send(chunkRes.buffer);
+      // PERF-01: Bounded streaming for large downloads with stream backpressure
+      const SLICE_SIZE = 8 * 1024 * 1024; // 8MB bounded chunks
+      if (chunkLength > SLICE_SIZE) {
+        let currentOffset = start;
+        const totalEnd = end;
+        while (currentOffset <= totalEnd) {
+          const sliceBytes = Math.min(SLICE_SIZE, totalEnd - currentOffset + 1);
+          const chunkRes = await agentHub.readChunkFromStorage(volume.id, file.relative_path, currentOffset, sliceBytes);
+          const canWriteMore = res.write(chunkRes.buffer);
+          if (!canWriteMore) {
+            await new Promise(resolveDrain => res.once('drain', resolveDrain));
+          }
+          currentOffset += sliceBytes;
+        }
+        res.end();
+      } else {
+        const chunkRes = await agentHub.readChunkFromStorage(volume.id, file.relative_path, start, chunkLength);
+        res.send(chunkRes.buffer);
+      }
     } else {
       const storageRoot = volume.mount_path || path.join(process.cwd(), 'local_storage');
       const physicalPath = path.join(storageRoot, file.relative_path);

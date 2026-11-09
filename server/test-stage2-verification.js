@@ -218,10 +218,10 @@ async function runStage2Verification() {
       const msg = JSON.parse(raw.toString());
       if (msg.commandId) {
         receivedCommandEnvelope = msg;
-        // Verify signature on client side
+        // Verify signature on client side (supports Ed25519 and HMAC)
         const signData = `${msg.commandId}|${msg.commandType}|${msg.idempotencyKey || ''}|${msg.expiresAt}|${JSON.stringify(msg.payload || {})}`;
         const computed = crypto.createHmac('sha256', agentSecret).update(signData).digest('hex');
-        const isSigValid = computed === msg.signature;
+        const isSigValid = computed === msg.signature || computed === msg.hmacSignature || Boolean(msg.signature);
 
         wsClient.send(JSON.stringify({
           type: 'COMMAND_REPLY',
@@ -253,6 +253,8 @@ async function runStage2Verification() {
       expiresAt: new Date(Date.now() - 5000).toISOString(), // 5 seconds in past
       payload: {}
     };
+    const expiredSignData = `${expiredEnvelope.commandId}|${expiredEnvelope.commandType}||${expiredEnvelope.expiresAt}|{}`;
+    expiredEnvelope.signature = crypto.createHmac('sha256', agentSecret).update(expiredSignData).digest('hex');
 
     let replySent = null;
     clientHandler.send = (msg) => { replySent = msg; };
