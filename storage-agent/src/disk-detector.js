@@ -102,7 +102,9 @@ export class WindowsDiskDetector {
           const totalBytes = vol.Size || 0;
           const freeBytes = vol.SizeRemaining || 0;
           const usedBytes = Math.max(0, totalBytes - freeBytes);
-          const mountPath = path.join(driveLetter, '\\', 'NKB_Storage_Root');
+          const mountPath = process.env.STORAGE_ROOT 
+            ? process.env.STORAGE_ROOT 
+            : path.join(driveLetter, '\\', 'NKB_Storage_Root');
 
           return {
             diskIndex,
@@ -186,7 +188,7 @@ export class WindowsDiskDetector {
             driveLetter: d,
             label: `NKB-DRIVE-${d.replace(':', '')}`,
             fileSystem: 'NTFS',
-            mountPath: path.join(d, '\\', 'NKB_Storage_Root'),
+            mountPath: process.env.STORAGE_ROOT ? process.env.STORAGE_ROOT : path.join(d, '\\', 'NKB_Storage_Root'),
             totalBytes: 1099511627776,
             freeBytes: 858993459200,
             usedBytes: 240518168576,

@@ -348,7 +348,7 @@ class StorageAgentHub {
     const { cpuUsage, memoryUsage, activeDrivesCount } = payload || {};
     try {
       await db.query(
-        `INSERT INTO agent_heartbeats (agent_id, cpu_usage_pct, memory_usage_pct, active_drives_count, recorded_at)
+        `INSERT INTO agent_heartbeats (agent_id, cpu_usage_pct, memory_usage_pct, active_drives_count, logged_at)
          VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
         [agentId, cpuUsage || 0, memoryUsage || 0, activeDrivesCount || 0]
       );
@@ -387,10 +387,10 @@ class StorageAgentHub {
           deviceId = crypto.randomUUID();
           await db.query(
             `INSERT INTO storage_devices (
-               id, agent_id, hardware_serial_evidence, disk_unique_id_evidence,
+               id, agent_id, hardware_serial, hardware_serial_evidence, disk_unique_id_evidence,
                vendor, model, bus_type, media_type, total_capacity_bytes,
                identity_confidence, status
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'VERIFIED', 'ONLINE')`,
+             ) VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, 'VERIFIED', 'ONLINE')`,
             [
               deviceId, agentId, dev.hardwareSerial || 'UNKNOWN', dev.diskId || 'UNKNOWN',
               dev.vendor || 'NKB Generic', dev.model || 'External Storage',
@@ -399,31 +399,35 @@ class StorageAgentHub {
           );
         }
 
-        const devVolumes = volumes.filter(v => v.diskNumber === dev.diskNumber || v.deviceId === dev.id);
+        const devVolumes = volumes.filter(v => v.diskNumber === dev.diskNumber || v.deviceId === dev.id || v.diskIndex === dev.deviceIndex);
         for (const vol of devVolumes) {
           const volExisting = await db.query(
-            `SELECT id FROM storage_volumes WHERE device_id = $1 AND volume_guid_evidence = $2`,
-            [deviceId, vol.volumeGuid || vol.mountPath]
+            `SELECT id FROM storage_volumes WHERE device_id = $1 AND (mount_path = $2 OR volume_uuid = $3)`,
+            [deviceId, vol.mountPath, vol.volumeUuid || vol.volumeGuid || vol.mountPath]
           );
 
           if (volExisting.rows && volExisting.rows[0]) {
             await db.query(
               `UPDATE storage_volumes SET 
-                 status = 'ONLINE', last_mounted_at = CURRENT_TIMESTAMP,
+                 status = 'ONLINE', last_verified_at = CURRENT_TIMESTAMP,
                  mount_path = $1, free_bytes = $2, total_bytes = $3
                WHERE id = $4`,
               [vol.mountPath, vol.freeBytes || 0, vol.totalBytes || 0, volExisting.rows[0].id]
             );
           } else {
+            const compId = vol.compositeIdentity || crypto.createHash('sha256').update(`${dev.hardwareSerial || 'UNKNOWN'}:${vol.volumeGuid || vol.mountPath}`).digest('hex');
             await db.query(
               `INSERT INTO storage_volumes (
-                 id, device_id, volume_guid_evidence, assigned_name,
-                 mount_path, filesystem_type, total_bytes, free_bytes,
+                 id, device_id, composite_identity, volume_uuid, hardware_serial, assigned_name,
+                 mount_path, filesystem, filesystem_type, total_bytes, free_bytes,
                  status, is_default
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ONLINE', false)`,
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, 'ONLINE', false)
+               ON CONFLICT (composite_identity) DO UPDATE SET
+                 status = 'ONLINE', mount_path = $7, free_bytes = $10, updated_at = CURRENT_TIMESTAMP`,
               [
-                crypto.randomUUID(), deviceId, vol.volumeGuid || vol.mountPath,
-                vol.volumeLabel || `Volume-${vol.driveLetter || 'X'}`,
+                crypto.randomUUID(), deviceId, compId, vol.volumeUuid || vol.volumeGuid || vol.mountPath,
+                dev.hardwareSerial || 'UNKNOWN',
+                vol.volumeLabel || vol.label || `Volume-${vol.driveLetter || 'X'}`,
                 vol.mountPath, vol.filesystem || 'NTFS',
                 vol.totalBytes || 0, vol.freeBytes || 0
               ]
