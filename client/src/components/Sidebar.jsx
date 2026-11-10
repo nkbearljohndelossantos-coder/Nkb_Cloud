@@ -144,9 +144,9 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
                   : 'text-slate-300 hover:bg-nkb-navy-800/60 hover:text-white'
               }`}
             >
-              <Server className={`w-4 h-4 ${currentView === 'storage' ? 'text-nkb-gold-400' : 'text-slate-400'}`} />
+              <HardDrive className={`w-4 h-4 ${currentView === 'storage' ? 'text-nkb-gold-400' : 'text-slate-400'}`} />
               <div className="flex-1 flex items-center justify-between">
-                <span>Storage Drives</span>
+                <span>Storage & Hardware</span>
                 {storageOverview?.connectedDrives !== undefined && (
                   <span className="text-[10px] bg-emerald-950 text-emerald-400 font-mono px-1.5 py-0.2 rounded">
                     {storageOverview.connectedDrives} Online

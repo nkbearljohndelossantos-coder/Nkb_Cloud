@@ -1,22 +1,25 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import util from 'util';
 import path from 'path';
-import fs from 'fs';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 
-const execPromise = util.promisify(exec);
+const execFilePromise = util.promisify(execFile);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export class WindowsDiskDetector {
   constructor() {
     this.cachedDrives = new Map();
+    this.psScriptPath = path.join(__dirname, 'detect-disks.ps1');
   }
 
   // Generate immutable composite physical drive fingerprint
-  // Never relies solely on drive letter, disk serial, or volume GUID
+  // Conforms to Stage 2 composite identity architecture
   computeCompositeIdentity(hardwareSerial, volumeGuid, partitionOffset, diskSize) {
     const raw = [
-      (hardwareSerial || 'GENERIC_SERIAL').trim().toUpperCase(),
-      (volumeGuid || 'GENERIC_GUID').trim().toLowerCase(),
+      (hardwareSerial || 'UNKNOWN_SERIAL').trim().toUpperCase(),
+      (volumeGuid || 'UNKNOWN_GUID').trim().toLowerCase(),
       String(partitionOffset || 0),
       String(diskSize || 0)
     ].join('::');
@@ -24,206 +27,117 @@ export class WindowsDiskDetector {
     return crypto.createHash('sha256').update(raw).digest('hex');
   }
 
-  // Scan physical disks and logical volumes on Windows
+  // Read-only native Windows hardware and volume enumeration
+  // Strictly read-only: does not modify, format, write, or index user files
   async scanDrives() {
     try {
-      // 1. Query physical disks via PowerShell Get-Disk
-      const psDisksCmd = `powershell -NoProfile -Command "Get-Disk | Select-Object Number, FriendlyName, SerialNumber, BusType, MediaType, Size, OperationalStatus, HealthStatus | ConvertTo-Json -Compress"`;
-      const { stdout: disksStdout } = await execPromise(psDisksCmd);
+      const { stdout } = await execFilePromise('powershell.exe', [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        this.psScriptPath
+      ], {
+        windowsHide: true,
+        maxBuffer: 10 * 1024 * 1024
+      });
 
-      let disksRaw = [];
-      if (disksStdout && disksStdout.trim()) {
-        const parsed = JSON.parse(disksStdout);
-        disksRaw = Array.isArray(parsed) ? parsed : [parsed];
+      if (!stdout || !stdout.trim()) {
+        throw new Error('PowerShell hardware detection returned empty output');
       }
 
-      // 2. Query partitions with offsets via Get-Partition
-      const psPartitionsCmd = `powershell -NoProfile -Command "Get-Partition | Where-Object { $_.DriveLetter -ne 0 -and $_.DriveLetter -ne $null } | Select-Object DiskNumber, PartitionNumber, DriveLetter, Offset, Size, UniqueId | ConvertTo-Json -Compress"`;
-      let partitionsRaw = [];
-      try {
-        const { stdout: partStdout } = await execPromise(psPartitionsCmd);
-        if (partStdout && partStdout.trim()) {
-          const parsed = JSON.parse(partStdout);
-          partitionsRaw = Array.isArray(parsed) ? parsed : [parsed];
-        }
-      } catch (e) {
-        // Fallback if partition query restricted
+      const parsed = JSON.parse(stdout.trim());
+      if (!parsed.success) {
+        throw new Error(parsed.error || 'PowerShell script reported failure');
       }
 
-      // 3. Query logical volumes via PowerShell Get-Volume (Filter to valid storage volumes with Size > 0)
-      const psVolumesCmd = `powershell -NoProfile -Command "Get-Volume | Where-Object { $_.DriveLetter -ne $null -and ($_.DriveType -eq 'Fixed' -or $_.DriveType -eq 'Removable') -and $_.Size -gt 0 } | Select-Object DriveLetter, FileSystemLabel, FileSystem, DriveType, SizeRemaining, Size, UniqueId | ConvertTo-Json -Compress"`;
-      const { stdout: volsStdout } = await execPromise(psVolumesCmd);
+      const rawDevices = Array.isArray(parsed.devices) ? parsed.devices : [];
+      const rawVolumes = Array.isArray(parsed.volumes) ? parsed.volumes : [];
 
-      let volsRaw = [];
-      if (volsStdout && volsStdout.trim()) {
-        const parsed = JSON.parse(volsStdout);
-        volsRaw = Array.isArray(parsed) ? parsed : [parsed];
-      }
+      // 1. Map physical devices (Layer 1)
+      const devices = rawDevices.map((dev) => {
+        const serial = (dev.hardwareSerial && dev.hardwareSerial.trim() !== '') ? dev.hardwareSerial.trim() : 'UNKNOWN';
+        const uniqueId = (dev.diskUniqueId && dev.diskUniqueId.trim() !== '') ? dev.diskUniqueId.trim() : 'UNKNOWN';
 
-      // 4. Map physical devices
-      const devices = disksRaw.map((disk) => {
-        const serial = (disk.SerialNumber || '').trim() || `DISK-HW-ID-${disk.Number}-${disk.Size}`;
         return {
-          deviceIndex: disk.Number,
+          diskNumber: dev.diskNumber,
+          deviceIndex: dev.deviceIndex,
           hardwareSerial: serial,
-          vendor: (disk.FriendlyName || '').split(' ')[0] || 'Generic',
-          model: disk.FriendlyName || `Disk ${disk.Number}`,
-          busType: this.normalizeBusType(disk.BusType),
-          mediaType: this.normalizeMediaType(disk.MediaType),
-          totalCapacityBytes: disk.Size || 0,
-          healthStatus: (disk.HealthStatus || 'Healthy').toUpperCase() === 'HEALTHY' ? 'GOOD' : 'WARNING',
-          operationalStatus: disk.OperationalStatus || 'OK'
+          diskUniqueId: uniqueId,
+          vendor: dev.vendor || 'UNKNOWN',
+          model: dev.model || `Disk ${dev.diskNumber}`,
+          busType: (dev.busType || 'UNKNOWN').toUpperCase(),
+          mediaType: (dev.mediaType || 'UNKNOWN').toUpperCase(),
+          totalCapacityBytes: Number(dev.totalCapacityBytes) || 0,
+          operationalStatus: dev.operationalStatus || 'UNKNOWN',
+          healthStatus: dev.healthStatus || 'UNKNOWN',
+          partitionCount: Number(dev.partitionCount) || 0,
+          connectionType: dev.connectionType || 'UNKNOWN',
+          classification: dev.classification || 'Fixed',
+          partitionStyle: dev.partitionStyle || 'UNKNOWN',
+          lastSeenAt: parsed.timestamp || new Date().toISOString()
         };
       });
 
-      // 5. Map volumes and calculate immutable composite identity
-      const volumes = volsRaw
-        .filter(vol => (vol.Size || 0) > 0)
-        .map((vol) => {
-          const driveLetter = `${vol.DriveLetter}:`;
-          const volGuid = vol.UniqueId ? this.cleanVolumeGuid(vol.UniqueId) : `VOL-UUID-${vol.DriveLetter}`;
+      // 2. Map logical volumes and partitions (Layer 2)
+      const volumes = rawVolumes.map((vol) => {
+        const parentDevice = devices.find(d => d.diskNumber === vol.diskNumber) || null;
+        const hwSerial = parentDevice ? parentDevice.hardwareSerial : (vol.hardwareSerial || 'UNKNOWN');
+        const diskCapacity = parentDevice ? parentDevice.totalCapacityBytes : Number(vol.totalBytes || 0);
 
-          const part = partitionsRaw.find(p => String(p.DriveLetter).toUpperCase() === String(vol.DriveLetter).toUpperCase());
-          const diskIndex = part ? part.DiskNumber : 0;
-          const partOffset = part ? part.Offset : 0;
-          const partUniqueId = part?.UniqueId || `PART-${driveLetter}-${partOffset}`;
+        const volGuid = (vol.volumeGuid && vol.volumeGuid !== 'NOT_AVAILABLE') ? vol.volumeGuid : `VOL-PART-${vol.diskNumber}-${vol.partitionNumber}`;
+        const compositeIdentity = this.computeCompositeIdentity(
+          hwSerial,
+          volGuid,
+          vol.partitionOffset,
+          diskCapacity
+        );
 
-          const parentDisk = devices.find(d => d.deviceIndex === diskIndex) || devices[0];
-          const hardwareSerial = parentDisk ? parentDisk.hardwareSerial : `SERIAL-${driveLetter}`;
-          const diskSize = parentDisk ? parentDisk.totalCapacityBytes : (vol.Size || 0);
+        const driveLetter = vol.driveLetter || null;
+        const mountPoint = vol.mountPoint || (driveLetter ? `${driveLetter}\\` : `Partition-${vol.diskNumber}-${vol.partitionNumber}`);
 
-          const compositeIdentity = this.computeCompositeIdentity(
-            hardwareSerial,
-            volGuid,
-            partOffset,
-            diskSize
-          );
+        // Safe designated mount path for NKB Cloud root if volume is lettered
+        const safeMountPath = driveLetter
+          ? path.join(driveLetter, '\\', 'NKB_Storage_Root')
+          : mountPoint;
 
-          const totalBytes = vol.Size || 0;
-          const freeBytes = vol.SizeRemaining || 0;
-          const usedBytes = Math.max(0, totalBytes - freeBytes);
-          const mountPath = process.env.STORAGE_ROOT 
-            ? process.env.STORAGE_ROOT 
-            : path.join(driveLetter, '\\', 'NKB_Storage_Root');
-
-          return {
-            diskIndex,
-            compositeIdentity,
-            volumeUuid: volGuid,
-            hardwareSerial,
-            partitionUniqueId: partUniqueId,
-            driveLetter,
-            label: vol.FileSystemLabel || `Drive ${driveLetter}`,
-            fileSystem: vol.FileSystem || 'NTFS',
-            mountPath,
-            totalBytes,
-            freeBytes,
-            usedBytes,
-            status: 'ONLINE'
-          };
-        });
-
-      return { devices, volumes };
-    } catch (err) {
-      console.warn('[DiskDetector] PowerShell scan failed, using fallback scan with composite identifiers:', err.message);
-      return this.fallbackScan();
-    }
-  }
-
-  normalizeBusType(busType) {
-    if (!busType) return 'SATA';
-    const b = String(busType).toUpperCase();
-    if (b.includes('NVME')) return 'NVMe';
-    if (b.includes('USB')) return 'USB';
-    if (b.includes('SATA')) return 'SATA';
-    if (b.includes('SCSI')) return 'SCSI';
-    return b;
-  }
-
-  normalizeMediaType(mediaType) {
-    if (!mediaType) return 'SSD';
-    const m = String(mediaType).toUpperCase();
-    if (m.includes('SSD')) return 'SSD';
-    if (m.includes('HDD')) return 'HDD';
-    return 'SSD';
-  }
-
-  cleanVolumeGuid(guidStr) {
-    const match = guidStr.match(/\{([a-fA-F0-9-]+)\}/);
-    return match ? match[1] : guidStr.replace(/[^a-zA-Z0-9-]/g, '');
-  }
-
-  fallbackScan() {
-    const defaultDrives = ['C:', 'J:', 'G:'];
-    const volumes = [];
-    const devices = [{
-      deviceIndex: 0,
-      hardwareSerial: 'NKB-STORAGE-HW-SERIAL-01',
-      vendor: 'Samsung / Kingston',
-      model: 'NKB High-Speed Storage Array',
-      busType: 'NVMe/USB',
-      mediaType: 'SSD',
-      totalCapacityBytes: 2199023255552,
-      healthStatus: 'GOOD',
-      operationalStatus: 'OK'
-    }];
-
-    for (const d of defaultDrives) {
-      try {
-        if (fs.existsSync(d + '\\')) {
-          const volGuid = `VOL-UUID-${d.replace(':', '')}`;
-          const composite = this.computeCompositeIdentity(
-            devices[0].hardwareSerial,
-            volGuid,
-            1048576,
-            devices[0].totalCapacityBytes
-          );
-
-          volumes.push({
-            diskIndex: 0,
-            compositeIdentity: composite,
-            volumeUuid: volGuid,
-            hardwareSerial: devices[0].hardwareSerial,
-            partitionUniqueId: `PART-${d.replace(':', '')}-01`,
-            driveLetter: d,
-            label: `NKB-DRIVE-${d.replace(':', '')}`,
-            fileSystem: 'NTFS',
-            mountPath: process.env.STORAGE_ROOT ? process.env.STORAGE_ROOT : path.join(d, '\\', 'NKB_Storage_Root'),
-            totalBytes: 1099511627776,
-            freeBytes: 858993459200,
-            usedBytes: 240518168576,
-            status: 'ONLINE'
-          });
-        }
-      } catch (e) {}
-    }
-
-    if (volumes.length === 0) {
-      const localPath = path.join(process.cwd(), 'NKB_Storage_Root');
-      const composite = this.computeCompositeIdentity(
-        devices[0].hardwareSerial,
-        'VOL-UUID-DEFAULT-01',
-        1048576,
-        devices[0].totalCapacityBytes
-      );
-
-      volumes.push({
-        diskIndex: 0,
-        compositeIdentity: composite,
-        volumeUuid: 'VOL-UUID-DEFAULT-01',
-        hardwareSerial: devices[0].hardwareSerial,
-        partitionUniqueId: 'PART-DEFAULT-01',
-        driveLetter: 'J:',
-        label: 'NKB-STORAGE-PRIMARY',
-        fileSystem: 'NTFS',
-        mountPath: localPath,
-        totalBytes: 2000000000000,
-        freeBytes: 1500000000000,
-        usedBytes: 500000000000,
-        status: 'ONLINE'
+        return {
+          diskIndex: vol.diskIndex,
+          diskNumber: vol.diskNumber,
+          partitionNumber: vol.partitionNumber,
+          partitionOffset: Number(vol.partitionOffset) || 0,
+          partitionSize: Number(vol.partitionSize) || 0,
+          partitionType: vol.partitionType || 'Basic',
+          compositeIdentity,
+          volumeUuid: volGuid,
+          volumeGuid: volGuid,
+          hardwareSerial: hwSerial,
+          driveLetter,
+          label: vol.volumeLabel || (driveLetter ? `Volume ${driveLetter}` : `Partition ${vol.partitionNumber}`),
+          volumeLabel: vol.volumeLabel || '',
+          fileSystem: (vol.filesystem || 'UNKNOWN').toUpperCase(),
+          filesystem: (vol.filesystem || 'UNKNOWN').toUpperCase(),
+          mountPath: safeMountPath,
+          mountPoint,
+          totalBytes: Number(vol.totalBytes) || 0,
+          freeBytes: Number(vol.freeBytes) || 0,
+          usedBytes: Number(vol.usedBytes) || 0,
+          healthStatus: vol.healthStatus || 'Healthy',
+          operationalStatus: vol.operationalStatus || 'OK',
+          status: 'ONLINE'
+        };
       });
-    }
 
-    return { devices, volumes };
+      return { devices, volumes, timestamp: parsed.timestamp };
+    } catch (err) {
+      console.error('[WindowsDiskDetector] Hardware enumeration error:', err.message);
+      // NEVER invent fake simulated storage. Report error and empty list.
+      return {
+        devices: [],
+        volumes: [],
+        error: err.message,
+        timestamp: new Date().toISOString()
+      };
+    }
   }
 }

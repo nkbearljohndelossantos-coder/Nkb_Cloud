@@ -49,6 +49,7 @@ router.delete('/files/:id/permanent', authenticateToken, requireRole('SUPER ADMI
 // Storage Management & Placement Policies
 router.get('/storage/overview', authenticateToken, storageCtrl.getStorageOverview);
 router.get('/storage/volumes', authenticateToken, storageCtrl.getStorageVolumes);
+router.get('/storage/hardware', authenticateToken, storageCtrl.getHardwareInventory);
 router.put('/storage/volumes/:id', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), storageCtrl.updateVolumeConfig);
 router.post('/storage/policies', authenticateToken, requireRole('SUPER ADMIN'), storageCtrl.setPlacementPolicy);
 router.post('/storage/scan', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), storageCtrl.triggerDriveScan);

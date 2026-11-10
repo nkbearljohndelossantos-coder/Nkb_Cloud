@@ -367,21 +367,89 @@ class StorageAgentHub {
     if (!devices || !volumes) return;
 
     try {
+      const activeDeviceIds = new Set();
+      const activeVolumeIds = new Set();
+
       for (const dev of devices) {
+        const rawSerial = (dev.hardwareSerial || 'UNKNOWN').trim();
+        const rawUniqueId = (dev.diskUniqueId || 'UNKNOWN').trim();
+        const rawModel = (dev.model || 'UNKNOWN').trim();
+        const isGenericSerial = !rawSerial || rawSerial === 'UNKNOWN' || /^0+$/.test(rawSerial);
+
+        // Calculate identity confidence
+        let confidence = 'VERIFIED';
+        if (isGenericSerial) {
+          if (rawUniqueId && rawUniqueId !== 'UNKNOWN') {
+            confidence = 'PARTIALLY_IDENTIFIED';
+          } else {
+            confidence = 'MANUAL_VERIFICATION_REQUIRED';
+          }
+        }
+
+        // For devices with generic serials, use uniqueId or diskNumber to prevent agent_id,hardware_serial unique collision
+        const dbHardwareSerial = isGenericSerial
+          ? `GENERIC-${(rawUniqueId !== 'UNKNOWN' ? crypto.createHash('sha256').update(rawUniqueId).digest('hex').substring(0, 12) : dev.diskNumber)}`
+          : rawSerial;
+
+        // Check for existing device record
         const existing = await db.query(
-          `SELECT id FROM storage_devices WHERE agent_id = $1 AND hardware_serial_evidence = $2`,
-          [agentId, dev.hardwareSerial || 'UNKNOWN']
+          `SELECT id, hardware_serial, model, vendor, disk_unique_id_evidence, identity_confidence
+           FROM storage_devices 
+           WHERE agent_id = $1 AND (hardware_serial = $2 OR hardware_serial_evidence = $3)`,
+          [agentId, dbHardwareSerial, rawSerial]
         );
 
         let deviceId;
         if (existing.rows && existing.rows[0]) {
-          deviceId = existing.rows[0].id;
+          const prev = existing.rows[0];
+          deviceId = prev.id;
+
+          // Detect IDENTITY_MISMATCH: if genuine non-generic serial suddenly has completely different model
+          if (!isGenericSerial && prev.model && prev.model !== rawModel && !rawModel.includes(prev.model) && !prev.model.includes(rawModel)) {
+            confidence = 'IDENTITY_MISMATCH';
+            console.warn(`[AgentHub] IDENTITY_MISMATCH detected for serial ${rawSerial}: Previous '${prev.model}' vs Current '${rawModel}'`);
+            
+            // Record conflict
+            await db.query(
+              `INSERT INTO storage_identity_conflicts (
+                 storage_device_id, conflict_reason, previous_snapshot, current_snapshot, status
+               ) VALUES ($1, $2, $3, $4, 'OPEN')`,
+              [
+                deviceId,
+                'HARDWARE_MODEL_CHANGE_FOR_SERIAL',
+                JSON.stringify({ serial: prev.hardware_serial, model: prev.model, vendor: prev.vendor }),
+                JSON.stringify({ serial: rawSerial, model: rawModel, vendor: dev.vendor }),
+              ]
+            );
+          }
+
           await db.query(
             `UPDATE storage_devices SET 
-               status = 'ONLINE', last_seen_at = CURRENT_TIMESTAMP,
-               total_capacity_bytes = $1, media_type = $2, bus_type = $3
-             WHERE id = $4`,
-            [dev.capacityBytes || 0, dev.mediaType || 'UNKNOWN', dev.busType || 'UNKNOWN', deviceId]
+               status = 'ONLINE',
+               last_seen_at = CURRENT_TIMESTAMP,
+               updated_at = CURRENT_TIMESTAMP,
+               total_capacity_bytes = $1,
+               media_type = $2,
+               bus_type = $3,
+               vendor = $4,
+               model = $5,
+               health_status = $6,
+               hardware_serial_evidence = $7,
+               disk_unique_id_evidence = $8,
+               identity_confidence = $9
+             WHERE id = $10`,
+            [
+              dev.totalCapacityBytes || dev.capacityBytes || 0,
+              dev.mediaType || 'UNKNOWN',
+              dev.busType || 'UNKNOWN',
+              dev.vendor || 'UNKNOWN',
+              rawModel,
+              dev.healthStatus || 'Healthy',
+              rawSerial,
+              rawUniqueId,
+              confidence,
+              deviceId
+            ]
           );
         } else {
           deviceId = crypto.randomUUID();
@@ -389,54 +457,190 @@ class StorageAgentHub {
             `INSERT INTO storage_devices (
                id, agent_id, hardware_serial, hardware_serial_evidence, disk_unique_id_evidence,
                vendor, model, bus_type, media_type, total_capacity_bytes,
-               identity_confidence, status
-             ) VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, 'VERIFIED', 'ONLINE')`,
+               health_status, identity_confidence, status, registered_at, updated_at, last_seen_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ONLINE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
             [
-              deviceId, agentId, dev.hardwareSerial || 'UNKNOWN', dev.diskId || 'UNKNOWN',
-              dev.vendor || 'NKB Generic', dev.model || 'External Storage',
-              dev.busType || 'USB', dev.mediaType || 'SSD', dev.capacityBytes || 0
+              deviceId,
+              agentId,
+              dbHardwareSerial,
+              rawSerial,
+              rawUniqueId,
+              dev.vendor || 'UNKNOWN',
+              rawModel,
+              dev.busType || 'UNKNOWN',
+              dev.mediaType || 'UNKNOWN',
+              dev.totalCapacityBytes || dev.capacityBytes || 0,
+              dev.healthStatus || 'Healthy',
+              confidence
             ]
           );
         }
 
-        const devVolumes = volumes.filter(v => v.diskNumber === dev.diskNumber || v.deviceId === dev.id || v.diskIndex === dev.deviceIndex);
+        activeDeviceIds.add(deviceId);
+
+        // Record identity observation for this physical disk
+        await db.query(
+          `INSERT INTO storage_identity_observations (
+             agent_id, storage_device_id, raw_device_payload, computed_confidence, reconciliation_verdict
+           ) VALUES ($1, $2, $3, $4, $5)`,
+          [
+            agentId,
+            deviceId,
+            JSON.stringify(dev),
+            confidence,
+            `Device index ${dev.diskNumber} (${rawModel}) reconciled as ${confidence}`
+          ]
+        );
+
+        // Process volumes associated with this physical disk
+        const devVolumes = volumes.filter(
+          v => v.diskNumber === dev.diskNumber || v.diskIndex === dev.deviceIndex
+        );
+
         for (const vol of devVolumes) {
+          const volGuid = vol.volumeGuid || vol.volumeUuid || 'UNKNOWN_GUID';
+          const compId = vol.compositeIdentity || crypto.createHash('sha256').update(`${dbHardwareSerial}:${volGuid}:${vol.partitionOffset || 0}`).digest('hex');
+          const driveLetter = vol.driveLetter || null;
+          const assignedName = vol.label || vol.volumeLabel || (driveLetter ? `Drive ${driveLetter}` : `Partition ${vol.partitionNumber}`);
+
           const volExisting = await db.query(
-            `SELECT id FROM storage_volumes WHERE device_id = $1 AND (mount_path = $2 OR volume_uuid = $3)`,
-            [deviceId, vol.mountPath, vol.volumeUuid || vol.volumeGuid || vol.mountPath]
+            `SELECT id, current_drive_letter, mount_path, volume_uuid, volume_guid
+             FROM storage_volumes 
+             WHERE composite_identity = $1 OR (device_id = $2 AND volume_uuid = $3)`,
+            [compId, deviceId, volGuid]
           );
 
+          let volumeId;
           if (volExisting.rows && volExisting.rows[0]) {
+            const existingVol = volExisting.rows[0];
+            volumeId = existingVol.id;
+
+            // Detect changed drive letter
+            if (driveLetter && existingVol.current_drive_letter && existingVol.current_drive_letter !== driveLetter) {
+              console.log(`[AgentHub] Volume drive letter change: was '${existingVol.current_drive_letter}', now '${driveLetter}' (Volume UUID: ${volGuid})`);
+              await db.query(
+                `INSERT INTO storage_identity_observations (
+                   agent_id, storage_device_id, storage_volume_id, raw_device_payload,
+                   observed_drive_letter, observed_volume_guid, computed_confidence, reconciliation_verdict
+                 ) VALUES ($1, $2, $3, $4, $5, $6, 'VERIFIED', $7)`,
+                [
+                  agentId,
+                  deviceId,
+                  volumeId,
+                  JSON.stringify(vol),
+                  driveLetter,
+                  volGuid,
+                  `Drive letter reassigned from ${existingVol.current_drive_letter} to ${driveLetter}; composite identity preserved`
+                ]
+              );
+            }
+
             await db.query(
               `UPDATE storage_volumes SET 
-                 status = 'ONLINE', last_verified_at = CURRENT_TIMESTAMP,
-                 mount_path = $1, free_bytes = $2, total_bytes = $3
-               WHERE id = $4`,
-              [vol.mountPath, vol.freeBytes || 0, vol.totalBytes || 0, volExisting.rows[0].id]
-            );
-          } else {
-            const compId = vol.compositeIdentity || crypto.createHash('sha256').update(`${dev.hardwareSerial || 'UNKNOWN'}:${vol.volumeGuid || vol.mountPath}`).digest('hex');
-            await db.query(
-              `INSERT INTO storage_volumes (
-                 id, device_id, composite_identity, volume_uuid, hardware_serial, assigned_name,
-                 mount_path, filesystem, filesystem_type, total_bytes, free_bytes,
-                 status, is_default
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, 'ONLINE', false)
-               ON CONFLICT (composite_identity) DO UPDATE SET
-                 status = 'ONLINE', mount_path = $7, free_bytes = $10, updated_at = CURRENT_TIMESTAMP`,
+                 device_id = $1,
+                 status = 'ONLINE',
+                 last_verified_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP,
+                 current_drive_letter = $2,
+                 mount_path = $3,
+                 label = $4,
+                 filesystem = $5,
+                 filesystem_type = $5,
+                 total_bytes = $6,
+                 free_bytes = $7,
+                 used_bytes = $8,
+                 volume_guid = $9
+               WHERE id = $10`,
               [
-                crypto.randomUUID(), deviceId, compId, vol.volumeUuid || vol.volumeGuid || vol.mountPath,
-                dev.hardwareSerial || 'UNKNOWN',
-                vol.volumeLabel || vol.label || `Volume-${vol.driveLetter || 'X'}`,
-                vol.mountPath, vol.filesystem || 'NTFS',
-                vol.totalBytes || 0, vol.freeBytes || 0
+                deviceId,
+                driveLetter,
+                vol.mountPath,
+                assignedName,
+                vol.filesystem || 'NTFS',
+                vol.totalBytes || 0,
+                vol.freeBytes || 0,
+                vol.usedBytes || 0,
+                volGuid,
+                volumeId
               ]
             );
+          } else {
+            volumeId = crypto.randomUUID();
+            await db.query(
+              `INSERT INTO storage_volumes (
+                 id, device_id, composite_identity, volume_uuid, volume_guid, hardware_serial,
+                 partition_unique_id, partition_offset_bytes, label, assigned_name,
+                 storage_purpose, filesystem, filesystem_type, current_drive_letter, mount_path,
+                 total_bytes, used_bytes, free_bytes, status, is_default, priority,
+                 last_verified_at, created_at, updated_at
+               ) VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $8, 'GENERAL', $9, $9, $10, $11, $12, $13, $14, 'ONLINE', false, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT (composite_identity) DO UPDATE SET
+                 device_id = $2,
+                 status = 'ONLINE',
+                 label = $8,
+                 assigned_name = $8,
+                 current_drive_letter = $10,
+                 mount_path = $11,
+                 total_bytes = $12,
+                 free_bytes = $14,
+                 used_bytes = $13,
+                 updated_at = CURRENT_TIMESTAMP`,
+              [
+                volumeId,
+                deviceId,
+                compId,
+                volGuid,
+                dbHardwareSerial,
+                vol.partitionUniqueId || `PART-${dev.diskNumber}-${vol.partitionNumber}`,
+                vol.partitionOffset || 0,
+                assignedName,
+                vol.filesystem || 'NTFS',
+                driveLetter,
+                vol.mountPath,
+                vol.totalBytes || 0,
+                vol.usedBytes || 0,
+                vol.freeBytes || 0
+              ]
+            );
+
+            // Layer 3: Ensure enterprise registration entry exists
+            const assetTag = `NKB-TAG-${compId.substring(0, 8).toUpperCase()}`;
+            await db.query(
+              `INSERT INTO storage_registrations (
+                 nkb_asset_tag, storage_device_id, storage_volume_id, assigned_name,
+                 storage_purpose, priority, is_default, registration_status, registered_at, updated_at
+               ) VALUES ($1, $2, $3, $4, 'GENERAL', 1, false, 'ACTIVE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT (nkb_asset_tag) DO NOTHING`,
+              [assetTag, deviceId, volumeId, assignedName]
+            );
           }
+
+          activeVolumeIds.add(volumeId);
         }
       }
+
+      // Mark unobserved devices belonging to this agent as OFFLINE
+      if (activeDeviceIds.size > 0) {
+        const idList = Array.from(activeDeviceIds);
+        await db.query(
+          `UPDATE storage_devices SET status = 'OFFLINE', updated_at = CURRENT_TIMESTAMP
+           WHERE agent_id = $1 AND NOT (id = ANY($2::uuid[]))`,
+          [agentId, idList]
+        );
+      }
+
+      // Mark unobserved volumes belonging to these devices as OFFLINE
+      if (activeVolumeIds.size > 0) {
+        const volIdList = Array.from(activeVolumeIds);
+        await db.query(
+          `UPDATE storage_volumes SET status = 'OFFLINE', updated_at = CURRENT_TIMESTAMP
+           WHERE device_id = ANY($1::uuid[]) AND NOT (id = ANY($2::uuid[]))`,
+          [Array.from(activeDeviceIds), volIdList]
+        );
+      }
+
     } catch (err) {
-      console.error('[AgentHub] Error updating drives inventory:', err.message);
+      console.error('[AgentHub] Error updating drives inventory:', err);
     }
   }
 

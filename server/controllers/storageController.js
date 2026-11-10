@@ -23,11 +23,14 @@ export async function getStorageOverview(req, res) {
     let offlineDrives = 0;
 
     volumes.forEach(v => {
-      totalCapacity += BigInt(v.total_bytes || 0);
-      usedCapacity += BigInt(v.used_bytes || 0);
-      freeCapacity += BigInt(v.free_bytes || 0);
-      if (v.status === 'ONLINE') onlineDrives++;
-      else offlineDrives++;
+      if (v.status === 'ONLINE') {
+        totalCapacity += BigInt(v.total_bytes || 0);
+        usedCapacity += BigInt(v.used_bytes || 0);
+        freeCapacity += BigInt(v.free_bytes || 0);
+        onlineDrives++;
+      } else {
+        offlineDrives++;
+      }
     });
 
     res.json({
@@ -93,12 +96,17 @@ export async function getStorageVolumes(req, res) {
         status: vol.status,
         lastVerifiedAt: vol.last_verified_at,
         device: {
+          id: dev.id,
           hardwareSerial: dev.hardware_serial,
+          hardwareSerialEvidence: dev.hardware_serial_evidence || dev.hardware_serial,
+          diskUniqueIdEvidence: dev.disk_unique_id_evidence,
           vendor: dev.vendor,
           model: dev.model,
           busType: dev.bus_type,
           mediaType: dev.media_type,
+          totalCapacityBytes: (dev.total_capacity_bytes || 0).toString(),
           healthStatus: dev.health_status,
+          identityConfidence: dev.identity_confidence || 'VERIFIED',
           deviceStatus: dev.status
         },
         agent: {
@@ -112,6 +120,135 @@ export async function getStorageVolumes(req, res) {
 
     res.json({ volumes: enrichedVolumes });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// 2b. Get Real Physical Storage Hardware & Volume Inventory
+export async function getHardwareInventory(req, res) {
+  try {
+    // Prefer devices belonging to currently active storage host agent
+    let devicesRes = await db.query(
+      `SELECT d.*, a.agent_name, a.status as agent_status, a.last_heartbeat
+       FROM storage_devices d
+       JOIN storage_agents a ON d.agent_id = a.id
+       WHERE a.status = 'ONLINE'
+       ORDER BY d.status ASC, d.last_seen_at DESC`
+    );
+
+    if (!devicesRes.rows || devicesRes.rows.length === 0) {
+      devicesRes = await db.query(
+        `SELECT d.*, a.agent_name, a.status as agent_status, a.last_heartbeat
+         FROM storage_devices d
+         LEFT JOIN storage_agents a ON d.agent_id = a.id
+         ORDER BY d.status ASC, d.last_seen_at DESC`
+      );
+    }
+    const devices = devicesRes.rows || [];
+
+    const volumesRes = await db.query(
+      `SELECT v.*, r.nkb_asset_tag, r.registration_status, r.storage_purpose as reg_purpose
+       FROM storage_volumes v
+       LEFT JOIN storage_registrations r ON r.storage_volume_id = v.id
+       ORDER BY v.current_drive_letter ASC NULLS LAST, v.created_at ASC`
+    );
+    const volumes = volumesRes.rows || [];
+
+    // Group volumes by device_id
+    const volumesByDevice = new Map();
+    for (const vol of volumes) {
+      const list = volumesByDevice.get(vol.device_id) || [];
+      list.push(vol);
+      volumesByDevice.set(vol.device_id, list);
+    }
+
+    // Recent observations and conflicts
+    const observationsRes = await db.query(
+      `SELECT * FROM storage_identity_observations ORDER BY observed_at DESC LIMIT 50`
+    );
+    const conflictsRes = await db.query(
+      `SELECT * FROM storage_identity_conflicts ORDER BY detected_at DESC LIMIT 20`
+    );
+
+    let totalPhysicalBytes = 0n;
+    let onlineDisks = 0;
+    let onlineVolumesCount = 0;
+
+    const enrichedDevices = devices.map(d => {
+      const devVolumes = volumesByDevice.get(d.id) || [];
+      const capacity = BigInt(d.total_capacity_bytes || 0);
+      if (d.status === 'ONLINE') {
+        onlineDisks++;
+        totalPhysicalBytes += capacity;
+      }
+
+      const mappedVolumes = devVolumes.map(v => {
+        if (v.status === 'ONLINE') onlineVolumesCount++;
+        return {
+          id: v.id,
+          deviceId: v.device_id,
+          compositeIdentity: v.composite_identity,
+          volumeUuid: v.volume_uuid,
+          volumeGuid: v.volume_guid,
+          hardwareSerial: v.hardware_serial,
+          partitionUniqueId: v.partition_unique_id,
+          partitionOffsetBytes: v.partition_offset_bytes,
+          label: v.label,
+          assignedName: v.assigned_name,
+          filesystem: v.filesystem,
+          filesystemType: v.filesystem_type,
+          currentDriveLetter: v.current_drive_letter,
+          mountPath: v.mount_path,
+          totalBytes: (v.total_bytes || 0).toString(),
+          usedBytes: (v.used_bytes || 0).toString(),
+          freeBytes: (v.free_bytes || 0).toString(),
+          status: v.status,
+          isDefault: Boolean(v.is_default),
+          priority: v.priority,
+          storagePurpose: v.storage_purpose,
+          assetTag: v.nkb_asset_tag,
+          lastVerifiedAt: v.last_verified_at,
+          createdAt: v.created_at
+        };
+      });
+
+      return {
+        id: d.id,
+        agentId: d.agent_id,
+        agentName: d.agent_name,
+        hardwareSerial: d.hardware_serial,
+        hardwareSerialEvidence: d.hardware_serial_evidence || d.hardware_serial,
+        diskUniqueIdEvidence: d.disk_unique_id_evidence || 'UNKNOWN',
+        vendor: d.vendor || 'UNKNOWN',
+        model: d.model || 'UNKNOWN',
+        busType: d.bus_type || 'UNKNOWN',
+        mediaType: d.media_type || 'UNKNOWN',
+        totalCapacityBytes: capacity.toString(),
+        status: d.status,
+        healthStatus: d.health_status || 'Healthy',
+        identityConfidence: d.identity_confidence || 'VERIFIED',
+        firstDiscoveredAt: d.first_discovered_at,
+        lastSeenAt: d.last_seen_at,
+        volumes: mappedVolumes
+      };
+    });
+
+    res.json({
+      success: true,
+      summary: {
+        totalDevices: devices.length,
+        onlineDevices: onlineDisks,
+        totalVolumes: volumes.length,
+        onlineVolumes: onlineVolumesCount,
+        totalCapacityBytes: totalPhysicalBytes.toString()
+      },
+      devices: enrichedDevices,
+      observations: observationsRes.rows || [],
+      conflicts: conflictsRes.rows || [],
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('[STORAGE CONTROLLER] Hardware inventory error:', err);
     res.status(500).json({ error: err.message });
   }
 }
