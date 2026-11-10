@@ -5,6 +5,7 @@ import Topbar from './components/Topbar';
 import DashboardView from './pages/DashboardView';
 import FileManagerView from './pages/FileManagerView';
 import StorageManagementView from './pages/StorageManagementView';
+import DriveBrowserView from './pages/DriveBrowserView';
 import UsersView from './pages/UsersView';
 import AuditLogsView from './pages/AuditLogsView';
 import LoginView from './pages/LoginView';
@@ -20,6 +21,7 @@ export default function App() {
   const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard', 'drive', 'shared-with-me', 'shared-drives', 'recent', 'starred', 'trash', 'category', 'storage', 'users', 'audit'
   const [currentCategory, setCurrentCategory] = useState(null);
   const [currentFolderId, setCurrentFolderId] = useState(null);
+  const [selectedBrowserVolumeId, setSelectedBrowserVolumeId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Data states
@@ -168,6 +170,19 @@ export default function App() {
               volumes={volumes}
               onRefresh={handleRefresh}
               agentConnected={agentConnected}
+              storageOverview={storageOverview}
+              onNavigateToDriveBrowser={(volId) => {
+                setSelectedBrowserVolumeId(volId);
+                setCurrentView('drive-browser');
+              }}
+            />
+          )}
+
+          {currentView === 'drive-browser' && (
+            <DriveBrowserView
+              volumes={volumes}
+              onRefreshVolumes={handleRefresh}
+              initialVolumeId={selectedBrowserVolumeId}
             />
           )}
 

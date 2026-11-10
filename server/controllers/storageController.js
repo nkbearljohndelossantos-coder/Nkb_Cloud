@@ -559,3 +559,162 @@ export async function verifyVolumeIntegrity(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// 8. Actual Drive Content Browser — Browse Directory
+export async function browseDriveDirectory(req, res) {
+  try {
+    const { volumeId } = req.params;
+    if (!UUID_REGEX.test(volumeId)) {
+      return res.status(404).json({ error: 'Storage volume not found' });
+    }
+    const {
+      path: relativePath = '',
+      page = 1,
+      limit = 50,
+      sort = 'name',
+      order = 'asc',
+      search = ''
+    } = req.query;
+
+    const browseResult = await agentHub.browseVolumeDirectory(volumeId, {
+      relativePath: String(relativePath || ''),
+      page: parseInt(page, 10) || 1,
+      limit: parseInt(limit, 10) || 50,
+      sortBy: String(sort || 'name'),
+      sortOrder: String(order || 'asc'),
+      search: String(search || '')
+    });
+
+    // Audit log directory browsing (privacy-safe: relative path only)
+    await db.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+       VALUES ($1, 'DRIVE_DIRECTORY_BROWSED', 'STORAGE_VOLUME', $2, $3)`,
+      [
+        req.user.id,
+        volumeId,
+        JSON.stringify({ path: relativePath || '/', itemsReturned: browseResult.items?.length })
+      ]
+    );
+
+    res.json({
+      success: true,
+      ...browseResult
+    });
+  } catch (err) {
+    console.error('[STORAGE CONTROLLER] Browse directory error:', err.message);
+    const status = err.message.includes('not found') ? 404 : (err.message.includes('Security') || err.message.includes('Access') ? 403 : 500);
+    res.status(status).json({ error: err.message });
+  }
+}
+
+// 9. Actual Drive Content Browser — Get File Metadata & Fingerprint
+export async function getDriveFileInfo(req, res) {
+  try {
+    const { volumeId } = req.params;
+    if (!UUID_REGEX.test(volumeId)) {
+      return res.status(404).json({ error: 'Storage volume not found' });
+    }
+    const { path: relativePath } = req.query;
+
+    if (!relativePath) {
+      return res.status(400).json({ error: 'path query parameter is required' });
+    }
+
+    const fileInfo = await agentHub.getVolumeFileInfo(volumeId, String(relativePath));
+    res.json({ success: true, fileInfo });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : (err.message.includes('Security') ? 403 : 500);
+    res.status(status).json({ error: err.message });
+  }
+}
+
+// 10. Actual Drive Content Browser — Safe File Preview
+export async function previewDriveFile(req, res) {
+  try {
+    const { volumeId } = req.params;
+    if (!UUID_REGEX.test(volumeId)) {
+      return res.status(404).json({ error: 'Storage volume not found' });
+    }
+    const { path: relativePath } = req.query;
+
+    if (!relativePath) {
+      return res.status(400).json({ error: 'path query parameter is required' });
+    }
+
+    const ext = relativePath.split('.').pop().toLowerCase();
+    const textExtensions = ['txt', 'csv', 'json', 'md', 'log', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'py', 'sql', 'xml', 'yml', 'yaml', 'env', 'ini'];
+    const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'];
+    const pdfExtensions = ['pdf'];
+
+    if (textExtensions.includes(ext)) {
+      const preview = await agentHub.readVolumeTextPreview(volumeId, String(relativePath));
+      return res.json({
+        success: true,
+        type: 'TEXT',
+        extension: ext,
+        ...preview
+      });
+    }
+
+    if (imageExtensions.includes(ext) || pdfExtensions.includes(ext)) {
+      const mimeTypes = {
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        gif: 'image/gif',
+        webp: 'image/webp',
+        svg: 'image/svg+xml',
+        bmp: 'image/bmp',
+        pdf: 'application/pdf'
+      };
+
+      const fileData = await agentHub.streamVolumeFile(volumeId, String(relativePath));
+      res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+      res.setHeader('Content-Length', fileData.buffer.length);
+      res.setHeader('Cache-Control', 'private, no-cache');
+      return res.send(fileData.buffer);
+    }
+
+    res.status(400).json({
+      error: `Preview is not supported for .${ext} files. Please download the file to inspect.`
+    });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : (err.message.includes('Security') ? 403 : 500);
+    res.status(status).json({ error: err.message });
+  }
+}
+
+// 11. Actual Drive Content Browser — File Download with Backpressure
+export async function downloadDriveFile(req, res) {
+  try {
+    const { volumeId } = req.params;
+    if (!UUID_REGEX.test(volumeId)) {
+      return res.status(404).json({ error: 'Storage volume not found' });
+    }
+    const { path: relativePath } = req.query;
+
+    if (!relativePath) {
+      return res.status(400).json({ error: 'path query parameter is required' });
+    }
+
+    const filename = relativePath.replace(/\\/g, '/').split('/').pop();
+    const fileData = await agentHub.streamVolumeFile(volumeId, String(relativePath));
+
+    // Audit log download
+    await db.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+       VALUES ($1, 'DRIVE_FILE_DOWNLOADED', 'STORAGE_VOLUME', $2, $3)`,
+      [req.user.id, volumeId, JSON.stringify({ filename, bytes: fileData.fileSize })]
+    );
+
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', fileData.buffer.length);
+    res.send(fileData.buffer);
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : (err.message.includes('Security') ? 403 : 500);
+    res.status(status).json({ error: err.message });
+  }
+}

@@ -158,19 +158,19 @@
       "os_version": "Windows",
       "ip_address": "::1",
       "agent_token": "nkb_test_agent_token_2026",
-      "status": "ONLINE",
+      "status": "OFFLINE",
       "last_heartbeat": "2026-11-09T03:37:22.369Z",
       "created_at": "2026-11-09T03:13:04.123Z",
-      "updated_at": "2026-11-09T03:37:22.369Z"
+      "updated_at": "2026-11-10T02:06:35.797Z"
     },
     {
       "id": "41216729-fc53-4414-9a4d-11cab7b94b14",
       "agent_name": "NKB-TEST-HOST",
       "machine_name": "TEST-PC",
       "agent_token": "nkb_token_stage2_verified",
-      "status": "ONLINE",
+      "status": "OFFLINE",
       "created_at": "2026-11-09T03:34:49.966Z",
-      "updated_at": "2026-11-09T04:00:19.738Z",
+      "updated_at": "2026-11-10T02:06:36.571Z",
       "last_heartbeat": "2026-11-09T04:00:19.738Z"
     },
     {
@@ -180,7 +180,7 @@
       "agent_token": "nkb_token_stage2_verified",
       "status": "OFFLINE",
       "created_at": "2026-11-09T03:35:32.795Z",
-      "updated_at": "2026-11-09T03:37:20.289Z"
+      "updated_at": "2026-11-10T02:06:37.328Z"
     },
     {
       "id": "e2ffd8d9-1e34-43d6-a6b5-398f3a9897ad",
@@ -189,7 +189,7 @@
       "agent_token": "nkb_token_stage2_verified",
       "status": "OFFLINE",
       "created_at": "2026-11-09T03:35:59.494Z",
-      "updated_at": "2026-11-09T03:37:20.712Z"
+      "updated_at": "2026-11-10T02:06:38.081Z"
     },
     {
       "id": "9f51d7e2-2d12-4ed7-b43a-36d2e5ff26ce",
@@ -198,7 +198,7 @@
       "agent_token": "nkb_token_stage2_verified",
       "status": "OFFLINE",
       "created_at": "2026-11-09T03:47:21.790Z",
-      "updated_at": "2026-11-09T03:47:21.792Z"
+      "updated_at": "2026-11-10T02:06:38.835Z"
     },
     {
       "id": "e56ab9ad-2636-45fc-9026-2bf3d964df53",
@@ -207,7 +207,7 @@
       "agent_token": "nkb_token_stage2_verified",
       "status": "OFFLINE",
       "created_at": "2026-11-09T04:00:10.117Z",
-      "updated_at": "2026-11-09T04:00:10.117Z"
+      "updated_at": "2026-11-10T02:06:39.592Z"
     },
     {
       "id": "fcd0df44-aa35-4171-bee6-e8f7f6ed1126",
@@ -216,7 +216,20 @@
       "agent_token": "nkb_token_stage2_verified",
       "status": "OFFLINE",
       "created_at": "2026-11-09T04:00:17.993Z",
-      "updated_at": "2026-11-09T04:00:17.994Z"
+      "updated_at": "2026-11-10T02:06:40.345Z"
+    },
+    {
+      "id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "agent_name": "NKB-STORAGE-HOST",
+      "machine_name": "NKB-STORAGE-PC",
+      "os_version": "Windows",
+      "ip_address": "::ffff:127.0.0.1",
+      "agent_token": "nkb_agent_token_primary_2026",
+      "status": "ONLINE",
+      "last_heartbeat": "2026-11-10T02:07:01.778Z",
+      "created_at": "2026-11-10T02:06:27.575Z",
+      "updated_at": "2026-11-10T02:07:01.778Z",
+      "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAYmBrMMgZLkyLryj/xk+nLm7885/VUcymNryRGiMlVtY=\n-----END PUBLIC KEY-----\n"
     }
   ],
   "agent_credentials": [
@@ -289,6 +302,30 @@
       "expires_at": null,
       "created_at": "2026-11-09T04:00:18.426Z",
       "updated_at": "2026-11-09T04:00:18.426Z"
+    },
+    {
+      "id": "4738d9f7-2dfa-45a4-919a-6dd65ce97126",
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAYmBrMMgZLkyLryj/xk+nLm7885/VUcymNryRGiMlVtY=\n-----END PUBLIC KEY-----\n",
+      "signature_algorithm": "ed25519",
+      "key_fingerprint": "e4bf66a00dce00310a2145b3c663308a1b182fc82d17ba3df17255cc0dee061c",
+      "key_version": 1,
+      "status": "ACTIVE",
+      "expires_at": null,
+      "created_at": "2026-11-10T02:06:28.714Z",
+      "updated_at": "2026-11-10T02:06:28.714Z"
+    },
+    {
+      "id": "127f39e5-493e-470d-a3ee-c7bc9b1b8f37",
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAYmBrMMgZLkyLryj/xk+nLm7885/VUcymNryRGiMlVtY=\n-----END PUBLIC KEY-----\n",
+      "signature_algorithm": "ed25519",
+      "key_fingerprint": "e4bf66a00dce00310a2145b3c663308a1b182fc82d17ba3df17255cc0dee061c",
+      "key_version": 1,
+      "status": "ACTIVE",
+      "expires_at": null,
+      "created_at": "2026-11-10T02:06:45.633Z",
+      "updated_at": "2026-11-10T02:06:45.633Z"
     }
   ],
   "agent_nonce_registry": [
@@ -403,6 +440,26 @@
       "id": "c4d7bb20-161f-4ea5-a2e2-77beb6c52171",
       "created_at": "2026-11-09T04:00:19.303Z",
       "updated_at": "2026-11-09T04:00:19.303Z"
+    },
+    {
+      "nonce": "971d8290974b044ebe241d77803867e5d383731fc2c29d389dafff787aa3c644",
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "expires_at": "2026-11-10T02:11:27.960Z"
+    },
+    {
+      "nonce": "d29850157ae8222f218f9e913954e12532c58062c75eceb6214b0c8e1d382a66",
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "expires_at": "2026-11-10T02:11:27.960Z"
+    },
+    {
+      "nonce": "726f0f0f1086f74f3294353c50771efc840bc9374ac57ac56015c62471cecb0d",
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "expires_at": "2026-11-10T02:11:44.874Z"
+    },
+    {
+      "nonce": "dbd028aa53ef540ac8687216b8678ecb30c3f9a8222f159c9bd946a954822692",
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "expires_at": "2026-11-10T02:11:44.874Z"
     }
   ],
   "agent_heartbeats": [
@@ -432,6 +489,16 @@
       "id": "7ce2b033-089d-4928-a6ec-220a83ca838e",
       "created_at": "2026-11-09T03:37:22.808Z",
       "updated_at": "2026-11-09T03:37:22.808Z"
+    },
+    {
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "cpu_usage_pct": 12,
+      "memory_usage_pct": 74,
+      "active_drives_count": 10,
+      "logged_at": null,
+      "id": "4fdbb3bc-2f6a-4ebc-bcda-5e41d795349a",
+      "created_at": "2026-11-10T02:07:01.392Z",
+      "updated_at": "2026-11-10T02:07:01.392Z"
     }
   ],
   "storage_devices": [
@@ -490,6 +557,25 @@
       "health_status": "GOOD",
       "created_at": "2026-11-09T03:13:09.011Z",
       "updated_at": "2026-11-09T03:13:09.011Z"
+    },
+    {
+      "id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "hardware_serial": "0000_0000_0000_0000_8CE3_8E10_01C3_0267.",
+      "hardware_serial_evidence": "0000_0000_0000_0000_8CE3_8E10_01C3_0267.",
+      "disk_unique_id_evidence": "eui.00000000000000008CE38E1001C30267",
+      "vendor": "KBG50ZNS512G",
+      "model": "KBG50ZNS512G NVMe KIOXIA 512GB",
+      "bus_type": "NVME",
+      "media_type": "SSD",
+      "total_capacity_bytes": 512110190592,
+      "health_status": "Healthy",
+      "identity_confidence": "VERIFIED",
+      "status": "OFFLINE",
+      "registered_at": null,
+      "updated_at": "2026-11-10T02:06:50.814Z",
+      "last_seen_at": null,
+      "created_at": "2026-11-10T02:06:31.628Z"
     }
   ],
   "storage_volumes": [
@@ -511,9 +597,9 @@
       "free_bytes": 64183345152,
       "is_default": false,
       "priority": 1,
-      "status": "RETIRED",
+      "status": "OFFLINE",
       "created_at": "2026-11-09T03:13:09.013Z",
-      "updated_at": "2026-11-09T03:37:21.560Z"
+      "updated_at": "2026-11-10T02:06:51.189Z"
     },
     {
       "id": "bb56ed23-3ff2-40b0-81f9-73c025a8c77a",
@@ -533,9 +619,9 @@
       "free_bytes": 281025114112,
       "is_default": false,
       "priority": 1,
-      "status": "ONLINE",
+      "status": "OFFLINE",
       "created_at": "2026-11-09T03:13:09.016Z",
-      "updated_at": "2026-11-09T03:13:09.016Z"
+      "updated_at": "2026-11-10T02:06:51.189Z"
     },
     {
       "id": "c347e15d-b05d-45aa-95c2-1bd6481b6f83",
@@ -555,9 +641,9 @@
       "free_bytes": 471335682048,
       "is_default": false,
       "priority": 1,
-      "status": "ONLINE",
+      "status": "OFFLINE",
       "created_at": "2026-11-09T03:13:09.018Z",
-      "updated_at": "2026-11-09T03:13:09.018Z"
+      "updated_at": "2026-11-10T02:06:51.189Z"
     },
     {
       "id": "44215c4d-fade-4ba7-98b3-52103f471fed",
@@ -577,14 +663,177 @@
       "free_bytes": 420451377152,
       "is_default": false,
       "priority": 1,
-      "status": "ONLINE",
+      "status": "OFFLINE",
       "created_at": "2026-11-09T03:13:09.020Z",
-      "updated_at": "2026-11-09T03:13:09.020Z"
+      "updated_at": "2026-11-10T02:06:51.189Z"
+    },
+    {
+      "id": "00617427-48b8-45e4-9e4e-ab7e5d4e0c4e",
+      "device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "composite_identity": "cbea1abea88513e27ee10eed6909d783d052675296703b6e07aeb63127ebae00",
+      "volume_uuid": "456808d4-8108-40e9-be58-74a9b3008195",
+      "volume_guid": "456808d4-8108-40e9-be58-74a9b3008195",
+      "hardware_serial": "0000_0000_0000_0000_8CE3_8E10_01C3_0267.",
+      "partition_unique_id": "PART-1-1",
+      "partition_offset_bytes": 1048576,
+      "label": "Partition 1",
+      "assigned_name": "Partition 1",
+      "storage_purpose": "GENERAL",
+      "filesystem": "SYSTEM",
+      "filesystem_type": "SYSTEM",
+      "current_drive_letter": null,
+      "mount_path": "Partition-1-1",
+      "total_bytes": 209715200,
+      "used_bytes": 209715200,
+      "free_bytes": 0,
+      "status": "OFFLINE",
+      "is_default": false,
+      "priority": 1,
+      "last_verified_at": null,
+      "created_at": "2026-11-10T02:06:32.388Z",
+      "updated_at": "2026-11-10T02:06:51.189Z"
     }
   ],
-  "storage_registrations": [],
-  "storage_identity_observations": [],
-  "storage_identity_conflicts": [],
+  "storage_registrations": [
+    {
+      "nkb_asset_tag": "NKB-TAG-CBEA1ABE",
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "storage_volume_id": "00617427-48b8-45e4-9e4e-ab7e5d4e0c4e",
+      "assigned_name": "Partition 1",
+      "storage_purpose": "GENERAL",
+      "priority": 1,
+      "is_default": false,
+      "registration_status": "ACTIVE",
+      "registered_at": null,
+      "updated_at": "2026-11-10T02:06:32.765Z",
+      "id": "3390e7d4-3c14-430c-a47a-788f23258650",
+      "created_at": "2026-11-10T02:06:32.765Z"
+    }
+  ],
+  "storage_identity_observations": [
+    {
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "raw_device_payload": "{\"diskNumber\":1,\"deviceIndex\":1,\"hardwareSerial\":\"0000_0000_0000_0000_8CE3_8E10_01C3_0267.\",\"diskUniqueId\":\"eui.00000000000000008CE38E1001C30267\",\"vendor\":\"KBG50ZNS512G\",\"model\":\"KBG50ZNS512G NVMe KIOXIA 512GB\",\"busType\":\"NVME\",\"mediaType\":\"SSD\",\"totalCapacityBytes\":512110190592,\"operationalStatus\":\"Online\",\"healthStatus\":\"Healthy\",\"partitionCount\":4,\"connectionType\":\"Internal NVMe\",\"classification\":\"Fixed\",\"partitionStyle\":\"GPT\",\"lastSeenAt\":\"2026-11-10T02:06:31Z\"}",
+      "computed_confidence": "VERIFIED",
+      "reconciliation_verdict": "Device index 1 (KBG50ZNS512G NVMe KIOXIA 512GB) reconciled as VERIFIED",
+      "id": "27fe9394-a72e-4aaf-b522-2a5b77eb56d9",
+      "created_at": "2026-11-10T02:06:32.010Z",
+      "updated_at": "2026-11-10T02:06:32.010Z"
+    },
+    {
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "raw_device_payload": "{\"diskNumber\":0,\"deviceIndex\":0,\"hardwareSerial\":\"WGS3SLFN\",\"diskUniqueId\":\"5000C500BF0EC2E7\",\"vendor\":\"Seagate\",\"model\":\"ST1000LM049-2GH172\",\"busType\":\"SATA\",\"mediaType\":\"HDD\",\"totalCapacityBytes\":1000204886016,\"operationalStatus\":\"Online\",\"healthStatus\":\"Healthy\",\"partitionCount\":1,\"connectionType\":\"Internal SATA\",\"classification\":\"Fixed\",\"partitionStyle\":\"GPT\",\"lastSeenAt\":\"2026-11-10T02:06:31Z\"}",
+      "computed_confidence": "IDENTITY_MISMATCH",
+      "reconciliation_verdict": "Device index 0 (ST1000LM049-2GH172) reconciled as IDENTITY_MISMATCH",
+      "id": "2859c37c-a432-47b7-bc75-5fa3bf44e998",
+      "created_at": "2026-11-10T02:06:33.519Z",
+      "updated_at": "2026-11-10T02:06:33.519Z"
+    },
+    {
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "raw_device_payload": "{\"diskNumber\":3,\"deviceIndex\":3,\"hardwareSerial\":\"00000000000000000000\",\"diskUniqueId\":\"USBSTOR\\\\DISK&VEN_ASMT&PROD_2115&REV_0\\\\00000000000000000000&0:NKbManuf\",\"vendor\":\"ASMedia\",\"model\":\"ASMT 2115\",\"busType\":\"USB\",\"mediaType\":\"UNKNOWN\",\"totalCapacityBytes\":500107862016,\"operationalStatus\":\"Online\",\"healthStatus\":\"Healthy\",\"partitionCount\":1,\"connectionType\":\"External USB\",\"classification\":\"Removable/External\",\"partitionStyle\":\"MBR\",\"lastSeenAt\":\"2026-11-10T02:06:31Z\"}",
+      "computed_confidence": "PARTIALLY_IDENTIFIED",
+      "reconciliation_verdict": "Device index 3 (ASMT 2115) reconciled as PARTIALLY_IDENTIFIED",
+      "id": "79aae5e2-86f1-41c0-a060-ad1ea2c9f1e3",
+      "created_at": "2026-11-10T02:06:33.897Z",
+      "updated_at": "2026-11-10T02:06:33.897Z"
+    },
+    {
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "raw_device_payload": "{\"diskNumber\":2,\"deviceIndex\":2,\"hardwareSerial\":\"670200216EFA\",\"diskUniqueId\":\"USBSTOR\\\\DISK&VEN_GEIL_Z3_&PROD_512GB&REV_0015\\\\670200216EFA&0:NKbManuf\",\"vendor\":\"GeIL\",\"model\":\"GeIL Z3_ 512GB\",\"busType\":\"USB\",\"mediaType\":\"UNKNOWN\",\"totalCapacityBytes\":512110190592,\"operationalStatus\":\"Online\",\"healthStatus\":\"Healthy\",\"partitionCount\":4,\"connectionType\":\"External USB\",\"classification\":\"Removable/External\",\"partitionStyle\":\"GPT\",\"lastSeenAt\":\"2026-11-10T02:06:31Z\"}",
+      "computed_confidence": "IDENTITY_MISMATCH",
+      "reconciliation_verdict": "Device index 2 (GeIL Z3_ 512GB) reconciled as IDENTITY_MISMATCH",
+      "id": "908d52e9-92ab-426e-95c1-ed50f95ba8f8",
+      "created_at": "2026-11-10T02:06:34.660Z",
+      "updated_at": "2026-11-10T02:06:34.660Z"
+    },
+    {
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "raw_device_payload": "{\"diskNumber\":1,\"deviceIndex\":1,\"hardwareSerial\":\"0000_0000_0000_0000_8CE3_8E10_01C3_0267.\",\"diskUniqueId\":\"eui.00000000000000008CE38E1001C30267\",\"vendor\":\"KBG50ZNS512G\",\"model\":\"KBG50ZNS512G NVMe KIOXIA 512GB\",\"busType\":\"NVME\",\"mediaType\":\"SSD\",\"totalCapacityBytes\":512110190592,\"operationalStatus\":\"Online\",\"healthStatus\":\"Healthy\",\"partitionCount\":4,\"connectionType\":\"Internal NVMe\",\"classification\":\"Fixed\",\"partitionStyle\":\"GPT\",\"lastSeenAt\":\"2026-11-10T02:06:48Z\"}",
+      "computed_confidence": "VERIFIED",
+      "reconciliation_verdict": "Device index 1 (KBG50ZNS512G NVMe KIOXIA 512GB) reconciled as VERIFIED",
+      "id": "2b0d7bd2-6d3a-4749-abed-6bff94fbfa85",
+      "created_at": "2026-11-10T02:06:48.542Z",
+      "updated_at": "2026-11-10T02:06:48.542Z"
+    },
+    {
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "raw_device_payload": "{\"diskNumber\":0,\"deviceIndex\":0,\"hardwareSerial\":\"WGS3SLFN\",\"diskUniqueId\":\"5000C500BF0EC2E7\",\"vendor\":\"Seagate\",\"model\":\"ST1000LM049-2GH172\",\"busType\":\"SATA\",\"mediaType\":\"HDD\",\"totalCapacityBytes\":1000204886016,\"operationalStatus\":\"Online\",\"healthStatus\":\"Healthy\",\"partitionCount\":1,\"connectionType\":\"Internal SATA\",\"classification\":\"Fixed\",\"partitionStyle\":\"GPT\",\"lastSeenAt\":\"2026-11-10T02:06:48Z\"}",
+      "computed_confidence": "IDENTITY_MISMATCH",
+      "reconciliation_verdict": "Device index 0 (ST1000LM049-2GH172) reconciled as IDENTITY_MISMATCH",
+      "id": "6251af53-ff1c-4d7e-8a2c-8c57dde5b6f3",
+      "created_at": "2026-11-10T02:06:49.302Z",
+      "updated_at": "2026-11-10T02:06:49.302Z"
+    },
+    {
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "raw_device_payload": "{\"diskNumber\":3,\"deviceIndex\":3,\"hardwareSerial\":\"00000000000000000000\",\"diskUniqueId\":\"USBSTOR\\\\DISK&VEN_ASMT&PROD_2115&REV_0\\\\00000000000000000000&0:NKbManuf\",\"vendor\":\"ASMedia\",\"model\":\"ASMT 2115\",\"busType\":\"USB\",\"mediaType\":\"UNKNOWN\",\"totalCapacityBytes\":500107862016,\"operationalStatus\":\"Online\",\"healthStatus\":\"Healthy\",\"partitionCount\":1,\"connectionType\":\"External USB\",\"classification\":\"Removable/External\",\"partitionStyle\":\"MBR\",\"lastSeenAt\":\"2026-11-10T02:06:48Z\"}",
+      "computed_confidence": "PARTIALLY_IDENTIFIED",
+      "reconciliation_verdict": "Device index 3 (ASMT 2115) reconciled as PARTIALLY_IDENTIFIED",
+      "id": "2a1ac1c8-1298-4aa2-8ff7-04ff85b0415f",
+      "created_at": "2026-11-10T02:06:49.681Z",
+      "updated_at": "2026-11-10T02:06:49.681Z"
+    },
+    {
+      "agent_id": "608bb815-2708-428c-b02b-b417f96bb641",
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "raw_device_payload": "{\"diskNumber\":2,\"deviceIndex\":2,\"hardwareSerial\":\"670200216EFA\",\"diskUniqueId\":\"USBSTOR\\\\DISK&VEN_GEIL_Z3_&PROD_512GB&REV_0015\\\\670200216EFA&0:NKbManuf\",\"vendor\":\"GeIL\",\"model\":\"GeIL Z3_ 512GB\",\"busType\":\"USB\",\"mediaType\":\"UNKNOWN\",\"totalCapacityBytes\":512110190592,\"operationalStatus\":\"Online\",\"healthStatus\":\"Healthy\",\"partitionCount\":4,\"connectionType\":\"External USB\",\"classification\":\"Removable/External\",\"partitionStyle\":\"GPT\",\"lastSeenAt\":\"2026-11-10T02:06:48Z\"}",
+      "computed_confidence": "IDENTITY_MISMATCH",
+      "reconciliation_verdict": "Device index 2 (GeIL Z3_ 512GB) reconciled as IDENTITY_MISMATCH",
+      "id": "765ac5c3-6e01-47de-827e-ba532e0d0dac",
+      "created_at": "2026-11-10T02:06:50.438Z",
+      "updated_at": "2026-11-10T02:06:50.438Z"
+    }
+  ],
+  "storage_identity_conflicts": [
+    {
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "conflict_reason": "HARDWARE_MODEL_CHANGE_FOR_SERIAL",
+      "previous_snapshot": "{\"serial\":\"0000_0000_0000_0000_8CE3_8E10_01C3_0267.\",\"model\":\"KBG50ZNS512G NVMe KIOXIA 512GB\",\"vendor\":\"KBG50ZNS512G\"}",
+      "current_snapshot": "{\"serial\":\"WGS3SLFN\",\"model\":\"ST1000LM049-2GH172\",\"vendor\":\"Seagate\"}",
+      "status": "OPEN",
+      "id": "29d41a48-9f43-47c7-9372-9f1648d807ce",
+      "created_at": "2026-11-10T02:06:33.141Z",
+      "updated_at": "2026-11-10T02:06:33.141Z"
+    },
+    {
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "conflict_reason": "HARDWARE_MODEL_CHANGE_FOR_SERIAL",
+      "previous_snapshot": "{\"serial\":\"0000_0000_0000_0000_8CE3_8E10_01C3_0267.\",\"model\":\"KBG50ZNS512G NVMe KIOXIA 512GB\",\"vendor\":\"KBG50ZNS512G\"}",
+      "current_snapshot": "{\"serial\":\"670200216EFA\",\"model\":\"GeIL Z3_ 512GB\",\"vendor\":\"GeIL\"}",
+      "status": "OPEN",
+      "id": "8c824301-27be-4e6d-9793-5b7782045bc3",
+      "created_at": "2026-11-10T02:06:34.278Z",
+      "updated_at": "2026-11-10T02:06:34.278Z"
+    },
+    {
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "conflict_reason": "HARDWARE_MODEL_CHANGE_FOR_SERIAL",
+      "previous_snapshot": "{\"serial\":\"0000_0000_0000_0000_8CE3_8E10_01C3_0267.\",\"model\":\"KBG50ZNS512G NVMe KIOXIA 512GB\",\"vendor\":\"KBG50ZNS512G\"}",
+      "current_snapshot": "{\"serial\":\"WGS3SLFN\",\"model\":\"ST1000LM049-2GH172\",\"vendor\":\"Seagate\"}",
+      "status": "OPEN",
+      "id": "6637e333-1c80-4fbf-b94b-3232e28ffe63",
+      "created_at": "2026-11-10T02:06:48.925Z",
+      "updated_at": "2026-11-10T02:06:48.925Z"
+    },
+    {
+      "storage_device_id": "a0648f6b-7c2f-4b30-a8c6-79ce6dd41367",
+      "conflict_reason": "HARDWARE_MODEL_CHANGE_FOR_SERIAL",
+      "previous_snapshot": "{\"serial\":\"0000_0000_0000_0000_8CE3_8E10_01C3_0267.\",\"model\":\"KBG50ZNS512G NVMe KIOXIA 512GB\",\"vendor\":\"KBG50ZNS512G\"}",
+      "current_snapshot": "{\"serial\":\"670200216EFA\",\"model\":\"GeIL Z3_ 512GB\",\"vendor\":\"GeIL\"}",
+      "status": "OPEN",
+      "id": "c9c0c112-d681-4434-bfe5-add5627ea466",
+      "created_at": "2026-11-10T02:06:50.057Z",
+      "updated_at": "2026-11-10T02:06:50.057Z"
+    }
+  ],
   "storage_mount_history": [],
   "storage_health_logs": [],
   "agent_commands": [

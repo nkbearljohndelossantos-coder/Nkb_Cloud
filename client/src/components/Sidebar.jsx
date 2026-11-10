@@ -16,7 +16,9 @@ import {
   Settings,
   ShieldCheck,
   LayoutDashboard,
-  Cloud
+  Cloud,
+  FolderOpen,
+  Compass
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { formatBytes } from '../utils/formatters';
@@ -132,6 +134,26 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
               <span>Administration</span>
               <span className="text-[9px] bg-nkb-gold-500/20 text-nkb-gold-300 px-1.5 py-0.5 rounded">ADMIN</span>
             </div>
+
+            <button
+              onClick={() => {
+                setCurrentView('drive-browser');
+                setCurrentCategory(null);
+              }}
+              className={`w-full flex items-center space-x-3 px-3 py-2 rounded text-xs font-medium transition-colors text-left ${
+                currentView === 'drive-browser'
+                  ? 'bg-nkb-navy-800 text-nkb-gold-400 font-semibold border-l-2 border-nkb-gold-500'
+                  : 'text-slate-300 hover:bg-nkb-navy-800/60 hover:text-white'
+              }`}
+            >
+              <FolderOpen className={`w-4 h-4 ${currentView === 'drive-browser' ? 'text-nkb-gold-400' : 'text-slate-400'}`} />
+              <div className="flex-1 flex items-center justify-between">
+                <span>Drive Browser</span>
+                <span className="text-[9px] bg-nkb-gold-500/20 text-nkb-gold-400 font-mono px-1.5 py-0.2 rounded">
+                  EXPLORER
+                </span>
+              </div>
+            </button>
 
             <button
               onClick={() => {

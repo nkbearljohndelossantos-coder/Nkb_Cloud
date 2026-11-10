@@ -34,6 +34,11 @@ class DatabaseManager {
           connectionTimeoutMillis: 3000,
         });
 
+        // Handle idle client connection errors so unexpected backend disconnects do not crash the Node process
+        this.pool.on('error', (err) => {
+          console.warn('[DB] Unexpected error on idle PostgreSQL client:', err?.message || err);
+        });
+
         const client = await this.pool.connect();
         console.log('[DB] Successfully connected to PostgreSQL instance.');
         client.release();

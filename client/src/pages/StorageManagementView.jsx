@@ -23,12 +23,13 @@ import {
   Search,
   ExternalLink,
   Clock,
-  Eye
+  Eye,
+  FolderOpen
 } from 'lucide-react';
 import api from '../api/client';
 import { formatBytes, formatDate } from '../utils/formatters';
 
-export default function StorageManagementView({ volumes, onRefresh, agentConnected, storageOverview }) {
+export default function StorageManagementView({ volumes, onRefresh, agentConnected, storageOverview, onNavigateToDriveBrowser }) {
   // Navigation tabs within Storage
   const [activeTab, setActiveTab] = useState('physical-drives'); // 'physical-drives' | 'volumes' | 'migration' | 'observations'
   const [scanning, setScanning] = useState(false);
@@ -594,6 +595,17 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
 
                               {/* Right: Actions */}
                               <div className="flex items-center space-x-2 flex-shrink-0">
+                                {onNavigateToDriveBrowser && (
+                                  <button
+                                    onClick={() => onNavigateToDriveBrowser(vol.id)}
+                                    className="px-2.5 py-1 bg-nkb-gold-500 hover:bg-nkb-gold-400 text-nkb-navy-950 rounded text-xs font-bold shadow-2xs transition flex items-center space-x-1"
+                                    title="Browse actual directory and files on this drive"
+                                  >
+                                    <FolderOpen className="w-3.5 h-3.5" />
+                                    <span>Browse</span>
+                                  </button>
+                                )}
+
                                 <button
                                   onClick={() => handleVerifyVolume(vol.id, vol.assignedName || vol.currentDriveLetter)}
                                   className="px-2.5 py-1 border border-slate-300 hover:bg-slate-100 text-slate-700 rounded text-xs font-medium transition flex items-center space-x-1"
@@ -725,6 +737,17 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
                   </div>
 
                   <div className="flex items-center space-x-2 flex-shrink-0">
+                    {onNavigateToDriveBrowser && (
+                      <button
+                        onClick={() => onNavigateToDriveBrowser(vol.id)}
+                        className="px-3 py-1.5 bg-nkb-gold-500 hover:bg-nkb-gold-400 text-nkb-navy-950 rounded text-xs font-bold shadow-sm transition flex items-center space-x-1.5"
+                        title="Browse actual directory and files on this volume"
+                      >
+                        <FolderOpen className="w-3.5 h-3.5" />
+                        <span>Browse Files</span>
+                      </button>
+                    )}
+
                     <button
                       onClick={() => handleVerifyVolume(vol.id, vol.assignedName)}
                       className="px-3 py-1.5 border border-slate-300 hover:bg-slate-100 text-slate-700 rounded text-xs font-medium transition flex items-center space-x-1.5"

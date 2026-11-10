@@ -426,9 +426,16 @@ export class AgentClient {
           await this.reportDrives();
           break;
 
-        case 'WRITE_CHUNK':
-        case 'WRITE_CHUNK_STREAM':
-          result = await this.fileEngine.writeChunk(payload);
+        case 'LIST_DIRECTORY':
+          result = await this.fileEngine.listDirectory(payload);
+          break;
+
+        case 'GET_FILE_INFO':
+          result = await this.fileEngine.getFileInfo(payload);
+          break;
+
+        case 'READ_TEXT_PREVIEW':
+          result = await this.fileEngine.readTextPreview(payload);
           break;
 
         case 'READ_CHUNK':

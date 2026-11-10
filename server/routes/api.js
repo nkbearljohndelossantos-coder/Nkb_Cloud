@@ -50,6 +50,10 @@ router.delete('/files/:id/permanent', authenticateToken, requireRole('SUPER ADMI
 router.get('/storage/overview', authenticateToken, storageCtrl.getStorageOverview);
 router.get('/storage/volumes', authenticateToken, storageCtrl.getStorageVolumes);
 router.get('/storage/hardware', authenticateToken, storageCtrl.getHardwareInventory);
+router.get('/storage/volumes/:volumeId/browse', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), storageCtrl.browseDriveDirectory);
+router.get('/storage/volumes/:volumeId/file-info', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), storageCtrl.getDriveFileInfo);
+router.get('/storage/volumes/:volumeId/preview', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), storageCtrl.previewDriveFile);
+router.get('/storage/volumes/:volumeId/download', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), storageCtrl.downloadDriveFile);
 router.put('/storage/volumes/:id', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), storageCtrl.updateVolumeConfig);
 router.post('/storage/policies', authenticateToken, requireRole('SUPER ADMIN'), storageCtrl.setPlacementPolicy);
 router.post('/storage/scan', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), storageCtrl.triggerDriveScan);

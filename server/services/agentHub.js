@@ -697,6 +697,9 @@ class StorageAgentHub {
 
     const schemaCommandTypeMap = {
       'SCAN_DRIVES': 'SCAN_DRIVES',
+      'LIST_DIRECTORY': 'SCAN_DRIVES',
+      'GET_FILE_INFO': 'SCAN_DRIVES',
+      'READ_TEXT_PREVIEW': 'READ_CHUNK_STREAM',
       'WRITE_CHUNK': 'WRITE_CHUNK_STREAM',
       'WRITE_CHUNK_STREAM': 'WRITE_CHUNK_STREAM',
       'READ_CHUNK': 'READ_CHUNK_STREAM',
@@ -833,6 +836,141 @@ class StorageAgentHub {
       startByte,
       length
     });
+
+    const buffer = result.dataBuffer ? Buffer.from(result.dataBuffer) : (result.dataBase64 ? Buffer.from(result.dataBase64, 'base64') : Buffer.alloc(0));
+    return {
+      buffer,
+      startByte: result.startByte,
+      endByte: result.endByte,
+      fileSize: result.fileSize
+    };
+  }
+
+  // Actual Drive Content Browser: Browse directory contents via Storage Agent
+  async browseVolumeDirectory(volumeId, { relativePath = '', page = 1, limit = 50, sortBy = 'name', sortOrder = 'asc', search = '' }) {
+    const volRes = await db.query(
+      `SELECT v.*, d.agent_id, d.status as device_status, d.identity_confidence, d.hardware_serial, d.model as device_model
+       FROM storage_volumes v
+       JOIN storage_devices d ON v.device_id = d.id
+       WHERE v.id = $1`,
+      [volumeId]
+    );
+
+    if (!volRes.rows || !volRes.rows[0]) {
+      throw new Error('Storage volume not found');
+    }
+
+    const volume = volRes.rows[0];
+    if (volume.status !== 'ONLINE' || volume.device_status !== 'ONLINE') {
+      throw new Error(`Storage drive "${volume.assigned_name || volume.current_drive_letter}" is currently OFFLINE`);
+    }
+
+    if (volume.identity_confidence === 'IDENTITY_MISMATCH') {
+      throw new Error(`Security Violation: Storage volume belongs to a drive flagged with IDENTITY_MISMATCH. Access is blocked until manual verification.`);
+    }
+
+    const agentId = volume.agent_id;
+    const hasLetter = volume.current_drive_letter && volume.current_drive_letter.trim() !== '';
+    const volumeRoot = hasLetter ? `${volume.current_drive_letter}\\` : volume.mount_path;
+
+    const result = await this.dispatchCommand(agentId, 'LIST_DIRECTORY', {
+      volumeRoot,
+      relativePath,
+      page,
+      limit,
+      sortBy,
+      sortOrder,
+      search
+    }, 20000);
+
+    return {
+      volume: {
+        id: volume.id,
+        assignedName: volume.assigned_name,
+        currentDriveLetter: volume.current_drive_letter,
+        filesystem: volume.filesystem,
+        totalBytes: volume.total_bytes,
+        freeBytes: volume.free_bytes,
+        usedBytes: volume.used_bytes,
+        status: volume.status,
+        deviceModel: volume.device_model,
+        identityConfidence: volume.identity_confidence
+      },
+      ...result
+    };
+  }
+
+  // Actual Drive Content Browser: Get file metadata and fingerprint
+  async getVolumeFileInfo(volumeId, relativePath) {
+    const volRes = await db.query(
+      `SELECT v.*, d.agent_id, d.status as device_status, d.identity_confidence
+       FROM storage_volumes v
+       JOIN storage_devices d ON v.device_id = d.id
+       WHERE v.id = $1`,
+      [volumeId]
+    );
+
+    if (!volRes.rows || !volRes.rows[0]) throw new Error('Storage volume not found');
+    const volume = volRes.rows[0];
+    if (volume.status !== 'ONLINE') throw new Error(`Drive is OFFLINE`);
+    if (volume.identity_confidence === 'IDENTITY_MISMATCH') throw new Error(`IDENTITY_MISMATCH violation`);
+
+    const hasLetter = volume.current_drive_letter && volume.current_drive_letter.trim() !== '';
+    const volumeRoot = hasLetter ? `${volume.current_drive_letter}\\` : volume.mount_path;
+
+    return await this.dispatchCommand(volume.agent_id, 'GET_FILE_INFO', {
+      volumeRoot,
+      relativePath
+    }, 15000);
+  }
+
+  // Actual Drive Content Browser: Read text preview safely
+  async readVolumeTextPreview(volumeId, relativePath) {
+    const volRes = await db.query(
+      `SELECT v.*, d.agent_id, d.status as device_status, d.identity_confidence
+       FROM storage_volumes v
+       JOIN storage_devices d ON v.device_id = d.id
+       WHERE v.id = $1`,
+      [volumeId]
+    );
+
+    if (!volRes.rows || !volRes.rows[0]) throw new Error('Storage volume not found');
+    const volume = volRes.rows[0];
+    if (volume.status !== 'ONLINE') throw new Error(`Drive is OFFLINE`);
+
+    const hasLetter = volume.current_drive_letter && volume.current_drive_letter.trim() !== '';
+    const volumeRoot = hasLetter ? `${volume.current_drive_letter}\\` : volume.mount_path;
+
+    return await this.dispatchCommand(volume.agent_id, 'READ_TEXT_PREVIEW', {
+      volumeRoot,
+      relativePath
+    }, 15000);
+  }
+
+  // Actual Drive Content Browser: Read binary file chunk for download/preview streaming
+  async streamVolumeFile(volumeId, relativePath, startByte = 0, length = null) {
+    const volRes = await db.query(
+      `SELECT v.*, d.agent_id, d.status as device_status, d.identity_confidence
+       FROM storage_volumes v
+       JOIN storage_devices d ON v.device_id = d.id
+       WHERE v.id = $1`,
+      [volumeId]
+    );
+
+    if (!volRes.rows || !volRes.rows[0]) throw new Error('Storage volume not found');
+    const volume = volRes.rows[0];
+    if (volume.status !== 'ONLINE') throw new Error(`Drive is OFFLINE`);
+    if (volume.identity_confidence === 'IDENTITY_MISMATCH') throw new Error(`IDENTITY_MISMATCH violation`);
+
+    const hasLetter = volume.current_drive_letter && volume.current_drive_letter.trim() !== '';
+    const volumeRoot = hasLetter ? `${volume.current_drive_letter}\\` : volume.mount_path;
+
+    const result = await this.dispatchCommand(volume.agent_id, 'READ_CHUNK', {
+      mountPath: volumeRoot,
+      relativePath,
+      startByte,
+      length
+    }, 30000);
 
     const buffer = result.dataBuffer ? Buffer.from(result.dataBuffer) : (result.dataBase64 ? Buffer.from(result.dataBase64, 'base64') : Buffer.alloc(0));
     return {

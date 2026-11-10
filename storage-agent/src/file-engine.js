@@ -23,9 +23,15 @@ export class FileStorageEngine {
   }
 
   // Strict path traversal, UNC, ADS, DOS device, and security validator
-  resolveSafePath(mountPath, relativePath) {
-    if (!mountPath || !relativePath) {
-      throw new Error('Security Error: mountPath and relativePath are required');
+  resolveSafePath(mountPath, relativePath = '') {
+    if (!mountPath) {
+      throw new Error('Security Error: mountPath is required');
+    }
+
+    // Allow root directory of mount path when relativePath is empty or dot
+    if (!relativePath || relativePath === '.' || relativePath === '/' || relativePath === '\\') {
+      const resolvedMount = path.resolve(mountPath);
+      return resolvedMount;
     }
 
     // 1. Pre-check URL / Hex Percent-Encoded Traversal Attacks (%2e%2e, %2f, %5c)
@@ -229,7 +235,11 @@ export class FileStorageEngine {
     const fileSize = stat.size;
 
     const start = Math.max(0, parseInt(startByte, 10) || 0);
-    const end = length ? Math.min(fileSize - 1, start + parseInt(length, 10) - 1) : fileSize - 1;
+    // Bounded chunk size up to 16MB per request to prevent V8 memory overflow
+    const maxChunk = 16 * 1024 * 1024;
+    const requestedLength = (length !== null && length !== undefined) ? parseInt(length, 10) : (fileSize - start);
+    const boundedLength = Math.min(requestedLength, maxChunk);
+    const end = fileSize > 0 ? Math.min(fileSize - 1, start + boundedLength - 1) : 0;
 
     if (start >= fileSize && fileSize > 0) {
       throw new Error(`Requested range out of bounds (Start: ${start}, File Size: ${fileSize})`);
@@ -250,7 +260,7 @@ export class FileStorageEngine {
           length: fullBuffer.length,
           fileSize,
           dataBuffer: fullBuffer,
-          dataBase64: fullBuffer.toString('base64')
+          dataBase64: fullBuffer.length <= 16 * 1024 * 1024 ? fullBuffer.toString('base64') : null
         });
       });
       stream.on('error', (err) => reject(err));
@@ -330,25 +340,322 @@ export class FileStorageEngine {
     };
   }
 
-  // Delete payload only when explicitly authorized by Super Admin with authorizationToken
-  async deleteFile({ mountPath, relativePath, authorizationToken, commandId }) {
-    this.registerAllowlistedRoot(mountPath);
-    const targetPath = this.resolveSafePath(mountPath, relativePath);
-
-    if (!authorizationToken || typeof authorizationToken !== 'string') {
-      throw new Error('Security Violation: File deletion requires an explicit cryptographic authorizationToken');
+  // Read-only directory listing with sorting, search, and pagination
+  async listDirectory({ volumeRoot, relativePath = '', page = 1, limit = 50, sortBy = 'name', sortOrder = 'asc', search = '' }) {
+    if (!volumeRoot) {
+      throw new Error('volumeRoot is required for directory listing');
     }
 
-    if (commandId && !authorizationToken.includes(commandId)) {
-      throw new Error('Security Violation: Authorization token does not match the active commandId');
+    const resolvedRoot = path.resolve(volumeRoot);
+    const targetPath = this.resolveSafePath(volumeRoot, relativePath);
+
+    // Guard against Windows system directories
+    const targetLower = targetPath.toLowerCase();
+    const systemBlacklist = [
+      'c:\\windows', 'c:\\windows\\system32',
+      'system volume information', '$recycle.bin', 'config.msi', 'found.000'
+    ];
+    for (const b of systemBlacklist) {
+      if (targetLower.includes(b)) {
+        throw new Error(`Access Denied: Windows system protected directory is restricted: ${targetPath}`);
+      }
     }
 
-    if (fs.existsSync(targetPath)) {
-      fs.unlinkSync(targetPath);
-      return { deleted: true, targetPath };
+    if (!fs.existsSync(targetPath)) {
+      throw new Error(`Directory not found: ${relativePath || '/'}`);
     }
-    return { deleted: false, reason: 'Already deleted' };
+
+    const dirStat = fs.lstatSync(targetPath);
+    if (!dirStat.isDirectory()) {
+      throw new Error(`Target path is not a directory: ${relativePath}`);
+    }
+
+    // Read single directory entries without recursive scans
+    let rawEntries = [];
+    try {
+      rawEntries = fs.readdirSync(targetPath, { withFileTypes: true });
+    } catch (err) {
+      if (err.code === 'EPERM' || err.code === 'EACCES') {
+        const cleanRelative = relativePath ? relativePath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
+        const pathParts = cleanRelative ? cleanRelative.split('/') : [];
+        const breadcrumbs = [{ name: 'Root', path: '' }];
+        let accPath = '';
+        for (const part of pathParts) {
+          accPath = accPath ? `${accPath}/${part}` : part;
+          breadcrumbs.push({ name: part, path: accPath });
+        }
+        return {
+          volumeRoot: resolvedRoot,
+          currentPath: cleanRelative,
+          breadcrumbs,
+          parentPath: pathParts.length > 1 ? pathParts.slice(0, -1).join('/') : '',
+          items: [],
+          totalCount: 0,
+          totalFolders: 0,
+          totalFiles: 0,
+          page: 1,
+          limit: 50,
+          totalPages: 1,
+          permissionDenied: true,
+          error: `Access Denied: Windows ACLs restrict access to this directory.`
+        };
+      }
+      throw err;
+    }
+    const collectedItems = [];
+
+    const hiddenSystemItems = new Set([
+      '$recycle.bin', 'system volume information', 'pagefile.sys',
+      'hiberfil.sys', 'swapfile.sys', 'dumpstack.log.tmp', 'config.msi', 'found.000'
+    ]);
+
+    for (const entry of rawEntries) {
+      const entryNameLower = entry.name.toLowerCase();
+      if (hiddenSystemItems.has(entryNameLower)) {
+        continue;
+      }
+
+      const itemFullPath = path.join(targetPath, entry.name);
+      let stat = null;
+      try {
+        stat = fs.lstatSync(itemFullPath);
+      } catch (err) {
+        // Skip inaccessible entries
+        continue;
+      }
+
+      const isDir = stat.isDirectory();
+      const isSymlink = stat.isSymbolicLink();
+      const ext = isDir ? '' : path.extname(entry.name).toLowerCase();
+      const fileType = categorizeFileType(ext, isDir);
+      const mimeType = isDir ? 'inode/directory' : getMimeType(ext);
+
+      // Relative path from volume root for navigation
+      const itemRelativePath = path.relative(resolvedRoot, itemFullPath).replace(/\\/g, '/');
+
+      collectedItems.push({
+        name: entry.name,
+        isDirectory: isDir,
+        isSymlink,
+        size: isDir ? 0 : stat.size,
+        extension: ext,
+        fileType,
+        mimeType,
+        relativePath: itemRelativePath,
+        createdAt: stat.birthtime ? stat.birthtime.toISOString() : stat.ctime.toISOString(),
+        modifiedAt: stat.mtime ? stat.mtime.toISOString() : null,
+        attributes: {
+          isReadOnly: !(stat.mode & 0o200),
+          isHidden: entry.name.startsWith('.'),
+          isDirectory: isDir
+        }
+      });
+    }
+
+    // Filter by search term if provided
+    let filtered = collectedItems;
+    if (search && search.trim() !== '') {
+      const q = search.trim().toLowerCase();
+      filtered = filtered.filter(item => item.name.toLowerCase().includes(q));
+    }
+
+    // Sort items: Folders first, then files; then by selected field
+    const orderMult = sortOrder === 'desc' ? -1 : 1;
+    filtered.sort((a, b) => {
+      if (a.isDirectory && !b.isDirectory) return -1;
+      if (!a.isDirectory && b.isDirectory) return 1;
+
+      switch (sortBy) {
+        case 'size':
+          return (a.size - b.size) * orderMult;
+        case 'modifiedAt':
+          return ((new Date(a.modifiedAt || 0)).getTime() - (new Date(b.modifiedAt || 0)).getTime()) * orderMult;
+        case 'type':
+          return (a.fileType.localeCompare(b.fileType)) * orderMult;
+        case 'name':
+        default:
+          return (a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })) * orderMult;
+      }
+    });
+
+    // Pagination
+    const totalCount = filtered.length;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 50));
+    const totalPages = Math.ceil(totalCount / limitNum) || 1;
+    const startIndex = (pageNum - 1) * limitNum;
+    const paginatedItems = filtered.slice(startIndex, startIndex + limitNum);
+
+    // Build breadcrumb segments
+    const cleanRelative = relativePath ? relativePath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
+    const pathParts = cleanRelative ? cleanRelative.split('/') : [];
+    const breadcrumbs = [{ name: 'Root', path: '' }];
+    let accPath = '';
+    for (const part of pathParts) {
+      accPath = accPath ? `${accPath}/${part}` : part;
+      breadcrumbs.push({ name: part, path: accPath });
+    }
+
+    const parentPath = pathParts.length > 1
+      ? pathParts.slice(0, -1).join('/')
+      : (pathParts.length === 1 ? '' : null);
+
+    return {
+      volumeRoot: resolvedRoot,
+      currentPath: cleanRelative,
+      breadcrumbs,
+      parentPath,
+      items: paginatedItems,
+      totalCount,
+      totalFolders: filtered.filter(i => i.isDirectory).length,
+      totalFiles: filtered.filter(i => !i.isDirectory).length,
+      page: pageNum,
+      limit: limitNum,
+      totalPages,
+      scannedAt: new Date().toISOString()
+    };
   }
+
+  // Get detailed metadata and cryptographic fingerprint for a single file
+  async getFileInfo({ volumeRoot, relativePath }) {
+    if (!volumeRoot || !relativePath) {
+      throw new Error('volumeRoot and relativePath are required');
+    }
+
+    const resolvedRoot = path.resolve(volumeRoot);
+    const targetPath = this.resolveSafePath(volumeRoot, relativePath);
+
+    if (!fs.existsSync(targetPath)) {
+      throw new Error(`File not found: ${relativePath}`);
+    }
+
+    const stat = fs.statSync(targetPath);
+    if (stat.isDirectory()) {
+      throw new Error(`Target is a directory, not a file: ${relativePath}`);
+    }
+
+    const ext = path.extname(targetPath).toLowerCase();
+    const mimeType = getMimeType(ext);
+    const fileType = categorizeFileType(ext, false);
+
+    // Compute SHA-256 if file is under 50MB
+    let sha256 = null;
+    if (stat.size <= 50 * 1024 * 1024) {
+      const hash = crypto.createHash('sha256');
+      hash.update(fs.readFileSync(targetPath));
+      sha256 = hash.digest('hex');
+    }
+
+    // Determine preview support
+    const previewType = getPreviewType(ext);
+
+    return {
+      name: path.basename(targetPath),
+      relativePath: path.relative(resolvedRoot, targetPath).replace(/\\/g, '/'),
+      size: stat.size,
+      extension: ext,
+      fileType,
+      mimeType,
+      sha256,
+      createdAt: stat.birthtime ? stat.birthtime.toISOString() : stat.ctime.toISOString(),
+      modifiedAt: stat.mtime ? stat.mtime.toISOString() : null,
+      previewType,
+      isPreviewable: previewType !== 'NONE'
+    };
+  }
+
+  // Safe read of text files for preview (capped at 256KB)
+  async readTextPreview({ volumeRoot, relativePath, maxBytes = 256 * 1024 }) {
+    const targetPath = this.resolveSafePath(volumeRoot, relativePath);
+    if (!fs.existsSync(targetPath)) {
+      throw new Error(`File not found: ${relativePath}`);
+    }
+
+    const stat = fs.statSync(targetPath);
+    const bytesToRead = Math.min(stat.size, maxBytes);
+    const fd = fs.openSync(targetPath, 'r');
+    const buffer = Buffer.alloc(bytesToRead);
+    fs.readSync(fd, buffer, 0, bytesToRead, 0);
+    fs.closeSync(fd);
+
+    return {
+      content: buffer.toString('utf-8'),
+      truncated: stat.size > maxBytes,
+      totalBytes: stat.size,
+      bytesRead: bytesToRead
+    };
+  }
+}
+
+// Helpers for MIME type and file classification
+function getMimeType(extension) {
+  const ext = (extension || '').toLowerCase().replace('.', '');
+  const mimeMap = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    bmp: 'image/bmp',
+    pdf: 'application/pdf',
+    txt: 'text/plain; charset=utf-8',
+    csv: 'text/csv; charset=utf-8',
+    json: 'application/json; charset=utf-8',
+    md: 'text/markdown; charset=utf-8',
+    log: 'text/plain; charset=utf-8',
+    js: 'text/javascript; charset=utf-8',
+    jsx: 'text/javascript; charset=utf-8',
+    ts: 'text/typescript; charset=utf-8',
+    tsx: 'text/typescript; charset=utf-8',
+    html: 'text/html; charset=utf-8',
+    css: 'text/css; charset=utf-8',
+    py: 'text/x-python; charset=utf-8',
+    sql: 'text/plain; charset=utf-8',
+    xml: 'application/xml; charset=utf-8',
+    yml: 'text/yaml; charset=utf-8',
+    yaml: 'text/yaml; charset=utf-8',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    doc: 'application/msword',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls: 'application/vnd.ms-excel',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    zip: 'application/zip',
+    rar: 'application/x-rar-compressed',
+    '7z': 'application/x-7z-compressed',
+    tar: 'application/x-tar',
+    gz: 'application/gzip'
+  };
+  return mimeMap[ext] || 'application/octet-stream';
+}
+
+function categorizeFileType(ext, isDir) {
+  if (isDir) return 'Folder';
+  const e = (ext || '').toLowerCase().replace('.', '');
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(e)) return 'Image';
+  if (e === 'pdf') return 'PDF Document';
+  if (['doc', 'docx', 'rtf', 'odt'].includes(e)) return 'Word Document';
+  if (['xls', 'xlsx', 'csv'].includes(e)) return 'Spreadsheet';
+  if (['ppt', 'pptx'].includes(e)) return 'Presentation';
+  if (['txt', 'log', 'md', 'ini', 'env'].includes(e)) return 'Text Document';
+  if (['js', 'jsx', 'ts', 'tsx', 'html', 'css', 'py', 'sql', 'json', 'xml', 'yml', 'yaml'].includes(e)) return 'Source Code';
+  if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2'].includes(e)) return 'Archive';
+  if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(e)) return 'Video';
+  if (['mp3', 'wav', 'flac', 'aac', 'ogg'].includes(e)) return 'Audio';
+  if (['exe', 'msi', 'bat', 'cmd', 'ps1', 'dll', 'sys'].includes(e)) return 'Executable / Binary';
+  return 'File';
+}
+
+function getPreviewType(ext) {
+  const e = (ext || '').toLowerCase().replace('.', '');
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(e)) return 'IMAGE';
+  if (e === 'pdf') return 'PDF';
+  if (['txt', 'csv', 'json', 'md', 'log', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'py', 'sql', 'xml', 'yml', 'yaml', 'env', 'ini'].includes(e)) return 'TEXT';
+  return 'NONE';
 }
 
 export const fileEngine = new FileStorageEngine();
