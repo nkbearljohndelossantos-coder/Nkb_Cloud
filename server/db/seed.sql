@@ -80,7 +80,7 @@ INSERT INTO users (
     '00000000-0000-0000-0000-000000000001',
     'superadmin',
     'admin@nkbmanufacturing.com',
-    '$2b$10$uE4FsmJ3L5C7m0LzZsqQZex9M9CqX2JsmWqIomGgWomVqmFnmx8kS',
+    '$2a$10$BW5.KOJDCKbWnPqTxJbRHuEietCbjETW7G8zcyyuymgUS.4xuZtn6',
     'NKB Super Administrator',
     1,
     2,
