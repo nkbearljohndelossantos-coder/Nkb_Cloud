@@ -12,13 +12,26 @@ import {
 } from 'lucide-react';
 
 export function formatBytes(bytes, decimals = 2) {
-  if (!bytes || bytes === '0' || bytes === 0) return '0 B';
+  if (bytes === null || bytes === undefined || bytes === 0 || bytes === '0' || bytes === 0n) return '0 B';
+  let num;
+  try {
+    if (typeof bytes === 'bigint') {
+      num = Number(bytes);
+    } else if (typeof bytes === 'string') {
+      num = parseFloat(bytes);
+    } else {
+      num = Number(bytes);
+    }
+  } catch {
+    return '0 B';
+  }
+
+  if (isNaN(num) || num <= 0) return '0 B';
   const k = 1024;
   const dm = decimals < 0 ? 0 : decimals;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  const n = typeof bytes === 'string' ? parseFloat(bytes) : bytes;
-  const i = Math.floor(Math.log(n) / Math.log(k));
-  return `${parseFloat((n / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+  const i = Math.min(Math.floor(Math.log(num) / Math.log(k)), sizes.length - 1);
+  return `${parseFloat((num / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
 export function formatDate(dateString) {
