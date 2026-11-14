@@ -718,26 +718,71 @@ namespace NkbDrive.Client.UI
                     try
                     {
                         var tree = _client.GetDriveTree();
-                        if (tree != null && tree.ContainsKey("rootFolders"))
+                        if (tree != null)
                         {
-                            var list = tree["rootFolders"] as System.Collections.ArrayList;
-                            if (list != null)
+                            System.Collections.Generic.HashSet<string> serverIds = new System.Collections.Generic.HashSet<string>();
+                            if (tree.ContainsKey("rootFolders"))
                             {
-                                foreach (Dictionary<string, object> item in list)
+                                var list = tree["rootFolders"] as System.Collections.ArrayList;
+                                if (list != null)
                                 {
-                                    string name = item["name"].ToString();
-                                    string id = item["id"].ToString();
-                                    _repo.UpsertFile(new LocalFileRecord
+                                    foreach (Dictionary<string, object> item in list)
                                     {
-                                        FileId = id,
-                                        RelativePath = "\\" + name,
-                                        Name = name,
-                                        SizeBytes = 0,
-                                        Sha256 = "DIRECTORY",
-                                        SyncState = "SYNCED",
-                                        ServerUpdatedAt = DateTime.UtcNow.ToString("o"),
-                                        LocalUpdatedAt = DateTime.UtcNow.ToString("o")
-                                    });
+                                        string name = item["name"].ToString();
+                                        string id = item["id"].ToString();
+                                        serverIds.Add(id);
+                                        _repo.UpsertFile(new LocalFileRecord
+                                        {
+                                            FileId = id,
+                                            RelativePath = "\\" + name,
+                                            Name = name,
+                                            SizeBytes = 0,
+                                            Sha256 = "DIRECTORY",
+                                            SyncState = "SYNCED",
+                                            ServerUpdatedAt = DateTime.UtcNow.ToString("o"),
+                                            LocalUpdatedAt = DateTime.UtcNow.ToString("o")
+                                        });
+                                    }
+                                }
+                            }
+
+                            if (tree.ContainsKey("files"))
+                            {
+                                var fileList = tree["files"] as System.Collections.ArrayList;
+                                if (fileList != null)
+                                {
+                                    foreach (Dictionary<string, object> f in fileList)
+                                    {
+                                        string id = f["id"].ToString();
+                                        string name = f["name"].ToString();
+                                        long size = f.ContainsKey("sizeBytes") && f["sizeBytes"] != null ? Convert.ToInt64(f["sizeBytes"]) : 0;
+                                        string sha = f.ContainsKey("sha256") && f["sha256"] != null ? f["sha256"].ToString() : "";
+                                        serverIds.Add(id);
+                                        _repo.UpsertFile(new LocalFileRecord
+                                        {
+                                            FileId = id,
+                                            RelativePath = "\\" + name,
+                                            Name = name,
+                                            SizeBytes = size,
+                                            Sha256 = sha,
+                                            SyncState = "SYNCED",
+                                            ServerUpdatedAt = DateTime.UtcNow.ToString("o"),
+                                            LocalUpdatedAt = DateTime.UtcNow.ToString("o")
+                                        });
+                                    }
+                                }
+                            }
+
+                            // Prune any stale local files not present in the cloud tree (unless newly pending upload)
+                            var existing = _repo.ListFiles();
+                            if (existing != null)
+                            {
+                                foreach (var rec in existing)
+                                {
+                                    if (!serverIds.Contains(rec.FileId) && rec.SyncState != "SYNC_PENDING")
+                                    {
+                                        _repo.DeleteFileRecord(rec.FileId);
+                                    }
                                 }
                             }
                         }
