@@ -1,0 +1,5 @@
+﻿NKB DRIVE WINFSP KERNEL BRIDGE SPECIFICATION
+Filesystem Name: WinFsp.NKB
+Kernel Driver: winfsp-x64.sys (WHQL Signed)
+Managed Provider: Fsp.FileSystemBase
+Timestamp: 2026-11-11T09:03:40.9081378Z

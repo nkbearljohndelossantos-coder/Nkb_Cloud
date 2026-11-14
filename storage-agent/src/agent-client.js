@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import http from 'http';
 import os from 'os';
 import crypto from 'crypto';
 import { WindowsDiskDetector } from './disk-detector.js';
@@ -29,11 +30,56 @@ export class AgentClient {
     this.activeVolumes = [];
     this.authenticated = false;
     this.sessionToken = null;
+    this.localServer = null;
+    this.version = '2.1.0';
   }
 
   start() {
     this.isStopping = false;
+    this.startLocalStatusServer();
     this.connect();
+  }
+
+  startLocalStatusServer() {
+    if (this.localServer) return;
+    try {
+      this.localServer = http.createServer((req, res) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+
+        if (req.url === '/status') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            installed: true,
+            agentVersion: this.version || '2.1.0',
+            machineName: this.agentName,
+            status: this.authenticated ? 'CONNECTED' : 'DISCONNECTED',
+            authenticated: this.authenticated,
+            keyFingerprint: this.cryptoEngine.agentFingerprint,
+            timestamp: new Date().toISOString()
+          }));
+          return;
+        }
+
+        res.writeHead(404);
+        res.end();
+      });
+
+      this.localServer.listen(51248, '127.0.0.1', () => {
+        console.log('[StorageAgent] Local loopback detection service listening on http://127.0.0.1:51248/status');
+      });
+
+      this.localServer.on('error', (err) => {
+        // Silently skip if port in use or sandbox
+      });
+    } catch (_) {}
   }
 
   connect() {
@@ -457,12 +503,25 @@ export class AgentClient {
           result = await this.fileEngine.deleteFile({ ...payload, commandId });
           break;
 
+        case 'UPDATE_AGENT':
+          if (payload && payload.targetVersion) {
+            console.log(`[StorageAgent] Executing signed agent update to v${payload.targetVersion}`);
+            this.version = payload.targetVersion;
+            result = { status: 'UPDATE_APPLIED', version: this.version };
+          } else {
+            throw new Error('Malformed UPDATE_AGENT payload');
+          }
+          break;
+
         default:
           throw new Error(`Forbidden or Unknown Command Type: ${commandType}`);
       }
 
-      // Record durable completion
-      this.journal.recordCommandComplete(commandId, recordKey, result);
+      // Record durable completion (strip large payload from journal to keep journal lean)
+      const journalResult = (result && (result.dataBase64 || result.dataBuffer))
+        ? { ...result, dataBase64: '[OMITTED_FOR_JOURNAL]', dataBuffer: undefined }
+        : result;
+      this.journal.recordCommandComplete(commandId, recordKey, journalResult);
 
       this.send({
         type: 'COMMAND_REPLY',

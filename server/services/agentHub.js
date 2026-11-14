@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { WebSocketServer } from 'ws';
 import crypto from 'crypto';
 import db from '../config/db.js';
@@ -16,6 +18,12 @@ class StorageAgentHub {
     this.wss = new WebSocketServer({ server, path: '/ws/agent' });
 
     this.wss.on('connection', async (ws, req) => {
+      if (process.env.STAGING_MAINTENANCE_GATE === 'true') {
+        console.warn('[AgentHub] Connection rejected: Staging Maintenance Gate active');
+        ws.close(4003, 'STAGING_MAINTENANCE_GATE_ACTIVE');
+        return;
+      }
+
       const url = new URL(req.url, 'http://localhost');
       const token = req.headers['x-agent-token'] || url.searchParams.get('token');
       const clientIp = req.socket.remoteAddress;
@@ -41,6 +49,28 @@ class StorageAgentHub {
           );
           agent = { id: newAgentId, agent_name: 'NKB-STORAGE-HOST', agent_token: token };
           console.log(`[AgentHub] Paired new storage agent: ${agent.id}`);
+        }
+
+        // Device Lifecycle & State Verification (REVOKED / SUSPENDED / PENDING)
+        if (agent.status === 'REVOKED') {
+          console.warn(`[AgentHub] Rejected connection: Storage agent ${agent.id} is REVOKED`);
+          ws.send(JSON.stringify({ type: 'AUTH_REJECTED', reason: 'Device is REVOKED by security policy' }));
+          ws.close(4003, 'Device revoked');
+          return;
+        }
+
+        if (agent.status === 'SUSPENDED') {
+          console.warn(`[AgentHub] Rejected connection: Storage agent ${agent.id} is SUSPENDED`);
+          ws.send(JSON.stringify({ type: 'AUTH_REJECTED', reason: 'Device is SUSPENDED by administrator' }));
+          ws.close(4003, 'Device suspended');
+          return;
+        }
+
+        if (agent.status === 'PENDING') {
+          console.warn(`[AgentHub] Rejected connection: Storage agent ${agent.id} enrollment is PENDING approval`);
+          ws.send(JSON.stringify({ type: 'AUTH_REJECTED', reason: 'AWAITING_DEVICE_APPROVAL' }));
+          ws.close(4003, 'Awaiting approval');
+          return;
         }
 
         // Phase 2: SEC-02 Credential Lifecycle, Revocation and Expiration Verification
@@ -220,6 +250,24 @@ class StorageAgentHub {
       return;
     }
 
+    // 1b. Version compatibility check
+    if (agentVersion) {
+      const parts = agentVersion.split('.').map(Number);
+      const minParts = [2, 1, 0];
+      const isOutdated = parts[0] < minParts[0] || (parts[0] === minParts[0] && parts[1] < minParts[1]);
+      if (isOutdated) {
+        console.warn(`[AgentHub] Incompatible agent version ${agentVersion} for agent ${challenge.agent.id} (min: 2.1.0)`);
+        ws.send(JSON.stringify({
+          type: 'AUTH_REJECTED',
+          reason: 'UPDATE_REQUIRED',
+          minVersion: '2.1.0',
+          currentVersion: agentVersion
+        }));
+        try { ws.close(4004, 'Version update required'); } catch (_) {}
+        return;
+      }
+    }
+
     // 2. Phase 3: SEC-03 Atomic Nonce Registration (Zero Swallowed Errors)
     try {
       if (db.mode === 'postgres') {
@@ -393,10 +441,10 @@ class StorageAgentHub {
 
         // Check for existing device record
         const existing = await db.query(
-          `SELECT id, hardware_serial, model, vendor, disk_unique_id_evidence, identity_confidence
+          `SELECT id, hardware_serial_evidence, model, vendor, disk_unique_id_evidence, identity_confidence
            FROM storage_devices 
-           WHERE agent_id = $1 AND (hardware_serial = $2 OR hardware_serial_evidence = $3)`,
-          [agentId, dbHardwareSerial, rawSerial]
+           WHERE agent_id = $1 AND hardware_serial_evidence = $2`,
+          [agentId, rawSerial]
         );
 
         let deviceId;
@@ -413,11 +461,11 @@ class StorageAgentHub {
             await db.query(
               `INSERT INTO storage_identity_conflicts (
                  storage_device_id, conflict_reason, previous_snapshot, current_snapshot, status
-               ) VALUES ($1, $2, $3, $4, 'OPEN')`,
+              ) VALUES ($1, $2, $3, $4, 'OPEN')`,
               [
                 deviceId,
                 'HARDWARE_MODEL_CHANGE_FOR_SERIAL',
-                JSON.stringify({ serial: prev.hardware_serial, model: prev.model, vendor: prev.vendor }),
+                JSON.stringify({ serial: prev.hardware_serial_evidence, model: prev.model, vendor: prev.vendor }),
                 JSON.stringify({ serial: rawSerial, model: rawModel, vendor: dev.vendor }),
               ]
             );
@@ -455,14 +503,13 @@ class StorageAgentHub {
           deviceId = crypto.randomUUID();
           await db.query(
             `INSERT INTO storage_devices (
-               id, agent_id, hardware_serial, hardware_serial_evidence, disk_unique_id_evidence,
+               id, agent_id, hardware_serial_evidence, disk_unique_id_evidence,
                vendor, model, bus_type, media_type, total_capacity_bytes,
-               health_status, identity_confidence, status, registered_at, updated_at, last_seen_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ONLINE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+               health_status, identity_confidence, status, first_discovered_at, created_at, updated_at, last_seen_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'ONLINE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
             [
               deviceId,
               agentId,
-              dbHardwareSerial,
               rawSerial,
               rawUniqueId,
               dev.vendor || 'UNKNOWN',
@@ -498,15 +545,24 @@ class StorageAgentHub {
         );
 
         for (const vol of devVolumes) {
+          // Strictly skip hidden, system, reserved, recovery, or non-data partitions
+          const isHidden = vol.isHidden || vol.isSystem || 
+            ['System', 'Reserved', 'Recovery', 'Unknown'].includes(vol.partitionType) ||
+            ['SYSTEM', 'RESERVED', 'RAW'].includes(vol.filesystem?.toUpperCase()) ||
+            (!vol.driveLetter && (!vol.mountPoint || vol.mountPoint.startsWith('Partition-') || vol.mountPoint.startsWith('\\\\?\\Volume')));
+          if (isHidden) {
+            continue;
+          }
+
           const volGuid = vol.volumeGuid || vol.volumeUuid || 'UNKNOWN_GUID';
           const compId = vol.compositeIdentity || crypto.createHash('sha256').update(`${dbHardwareSerial}:${volGuid}:${vol.partitionOffset || 0}`).digest('hex');
           const driveLetter = vol.driveLetter || null;
           const assignedName = vol.label || vol.volumeLabel || (driveLetter ? `Drive ${driveLetter}` : `Partition ${vol.partitionNumber}`);
 
           const volExisting = await db.query(
-            `SELECT id, current_drive_letter, mount_path, volume_uuid, volume_guid
+            `SELECT id, current_drive_letter, mount_path, volume_guid
              FROM storage_volumes 
-             WHERE composite_identity = $1 OR (device_id = $2 AND volume_uuid = $3)`,
+             WHERE composite_identity = $1 OR (device_id = $2 AND volume_guid = $3)`,
             [compId, deviceId, volGuid]
           );
 
@@ -517,7 +573,7 @@ class StorageAgentHub {
 
             // Detect changed drive letter
             if (driveLetter && existingVol.current_drive_letter && existingVol.current_drive_letter !== driveLetter) {
-              console.log(`[AgentHub] Volume drive letter change: was '${existingVol.current_drive_letter}', now '${driveLetter}' (Volume UUID: ${volGuid})`);
+              console.log(`[AgentHub] Volume drive letter change: was '${existingVol.current_drive_letter}', now '${driveLetter}' (Volume GUID: ${volGuid})`);
               await db.query(
                 `INSERT INTO storage_identity_observations (
                    agent_id, storage_device_id, storage_volume_id, raw_device_payload,
@@ -538,13 +594,12 @@ class StorageAgentHub {
             await db.query(
               `UPDATE storage_volumes SET 
                  device_id = $1,
-                 status = 'ONLINE',
+                 status = CASE WHEN status = 'RETIRED' THEN 'RETIRED' ELSE 'ONLINE' END,
                  last_verified_at = CURRENT_TIMESTAMP,
                  updated_at = CURRENT_TIMESTAMP,
                  current_drive_letter = $2,
                  mount_path = $3,
-                 label = $4,
-                 filesystem = $5,
+                 assigned_name = $4,
                  filesystem_type = $5,
                  total_bytes = $6,
                  free_bytes = $7,
@@ -568,30 +623,27 @@ class StorageAgentHub {
             volumeId = crypto.randomUUID();
             await db.query(
               `INSERT INTO storage_volumes (
-                 id, device_id, composite_identity, volume_uuid, volume_guid, hardware_serial,
-                 partition_unique_id, partition_offset_bytes, label, assigned_name,
-                 storage_purpose, filesystem, filesystem_type, current_drive_letter, mount_path,
-                 total_bytes, used_bytes, free_bytes, status, is_default, priority,
+                 id, device_id, composite_identity, volume_guid,
+                 partition_offset_bytes, assigned_name,
+                 filesystem_type, current_drive_letter, mount_path,
+                 total_bytes, used_bytes, free_bytes, status,
                  last_verified_at, created_at, updated_at
-               ) VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $8, 'GENERAL', $9, $9, $10, $11, $12, $13, $14, 'ONLINE', false, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ONLINE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                ON CONFLICT (composite_identity) DO UPDATE SET
                  device_id = $2,
-                 status = 'ONLINE',
-                 label = $8,
-                 assigned_name = $8,
-                 current_drive_letter = $10,
-                 mount_path = $11,
-                 total_bytes = $12,
-                 free_bytes = $14,
-                 used_bytes = $13,
+                 status = CASE WHEN storage_volumes.status = 'RETIRED' THEN 'RETIRED' ELSE 'ONLINE' END,
+                 assigned_name = $6,
+                 current_drive_letter = $8,
+                 mount_path = $9,
+                 total_bytes = $10,
+                 free_bytes = $12,
+                 used_bytes = $11,
                  updated_at = CURRENT_TIMESTAMP`,
               [
                 volumeId,
                 deviceId,
                 compId,
                 volGuid,
-                dbHardwareSerial,
-                vol.partitionUniqueId || `PART-${dev.diskNumber}-${vol.partitionNumber}`,
                 vol.partitionOffset || 0,
                 assignedName,
                 vol.filesystem || 'NTFS',
@@ -647,7 +699,7 @@ class StorageAgentHub {
   async handleAgentDisconnect(agentId) {
     try {
       await db.query(
-        `UPDATE storage_agents SET status = 'OFFLINE' WHERE id = $1`,
+        `UPDATE storage_agents SET status = 'OFFLINE' WHERE id = $1 AND status NOT IN ('REVOKED', 'SUSPENDED', 'PENDING')`,
         [agentId]
       );
       await db.query(
@@ -684,6 +736,10 @@ class StorageAgentHub {
 
   // Phase 1: SEC-01 & Phase 2: SEC-02 Typed, Canonical Command Dispatch with Ed25519
   async dispatchCommand(agentId, commandType, payload = {}, timeoutMs = 30000) {
+    if (process.env.STAGING_MAINTENANCE_GATE === 'true') {
+      throw new Error('STAGING_MAINTENANCE_GATE_ACTIVE: Storage Agent commands are blocked during maintenance');
+    }
+
     const agentSession = this.agents.get(agentId);
     if (!agentSession || !agentSession.authenticated) {
       throw new Error(`Storage Agent ${agentId} is not connected or not authenticated`);
@@ -761,6 +817,10 @@ class StorageAgentHub {
 
   // Phase 5: PERF-01 High-Performance Binary WebSocket Streaming Frame (Zero Base64 Overhead)
   async writeChunkToStorage(volumeId, relativePath, chunkIndex, chunkData, isLastChunk, chunkSha256) {
+    if (process.env.STAGING_MAINTENANCE_GATE === 'true') {
+      throw new Error('STAGING_MAINTENANCE_GATE_ACTIVE: Storage Agent chunk writes are blocked during maintenance');
+    }
+
     const volRes = await db.query('SELECT * FROM storage_volumes WHERE id = $1', [volumeId]);
     if (!volRes.rows || !volRes.rows[0]) throw new Error('Storage volume not found');
     const volume = volRes.rows[0];
@@ -810,7 +870,7 @@ class StorageAgentHub {
     }
 
     // Fallback for string/Base64 chunk data
-    return await this.dispatchCommand(agentId, 'WRITE_CHUNK', {
+    return await this.dispatchCommand(agentId, 'WRITE_CHUNK_STREAM', {
       mountPath: volume.mount_path,
       relativePath,
       chunkIndex,
@@ -837,7 +897,7 @@ class StorageAgentHub {
       length
     });
 
-    const buffer = result.dataBuffer ? Buffer.from(result.dataBuffer) : (result.dataBase64 ? Buffer.from(result.dataBase64, 'base64') : Buffer.alloc(0));
+    const buffer = result.dataBase64 ? Buffer.from(result.dataBase64, 'base64') : (result.dataBuffer ? Buffer.from(result.dataBuffer) : Buffer.alloc(0));
     return {
       buffer,
       startByte: result.startByte,
@@ -849,7 +909,7 @@ class StorageAgentHub {
   // Actual Drive Content Browser: Browse directory contents via Storage Agent
   async browseVolumeDirectory(volumeId, { relativePath = '', page = 1, limit = 50, sortBy = 'name', sortOrder = 'asc', search = '' }) {
     const volRes = await db.query(
-      `SELECT v.*, d.agent_id, d.status as device_status, d.identity_confidence, d.hardware_serial, d.model as device_model
+      `SELECT v.*, d.agent_id, d.status as device_status, d.identity_confidence, d.hardware_serial_evidence, d.model as device_model
        FROM storage_volumes v
        JOIN storage_devices d ON v.device_id = d.id
        WHERE v.id = $1`,
@@ -869,19 +929,46 @@ class StorageAgentHub {
       throw new Error(`Security Violation: Storage volume belongs to a drive flagged with IDENTITY_MISMATCH. Access is blocked until manual verification.`);
     }
 
-    const agentId = volume.agent_id;
+    let agentId = volume.agent_id;
+    if (!agentId || !this.isAgentConnected(agentId)) {
+      const fallbackAgent = this.getFirstConnectedAgentId();
+      if (fallbackAgent) agentId = fallbackAgent;
+    }
     const hasLetter = volume.current_drive_letter && volume.current_drive_letter.trim() !== '';
-    const volumeRoot = hasLetter ? `${volume.current_drive_letter}\\` : volume.mount_path;
+    let volumeRoot = hasLetter ? `${volume.current_drive_letter}\\` : volume.mount_path;
 
-    const result = await this.dispatchCommand(agentId, 'LIST_DIRECTORY', {
-      volumeRoot,
-      relativePath,
-      page,
-      limit,
-      sortBy,
-      sortOrder,
-      search
-    }, 20000);
+    // Verify if volumeRoot exists. If drive letter doesn't exist on host, fallback to mount_path
+    if (hasLetter && !fs.existsSync(volumeRoot) && volume.mount_path && fs.existsSync(volume.mount_path)) {
+      volumeRoot = volume.mount_path;
+    }
+
+    let result = null;
+    const isConnected = this.isAgentConnected(agentId);
+
+    if (isConnected) {
+      try {
+        result = await this.dispatchCommand(agentId, 'LIST_DIRECTORY', {
+          volumeRoot,
+          relativePath,
+          page,
+          limit,
+          sortBy,
+          sortOrder,
+          search
+        }, 15000);
+      } catch (cmdErr) {
+        console.warn(`[AgentHub] Agent LIST_DIRECTORY warning for ${volumeRoot}:`, cmdErr.message);
+      }
+    }
+
+    // Host local filesystem fallback if agent call fails or agent is offline
+    if (!result && volumeRoot && fs.existsSync(volumeRoot)) {
+      result = this.browseLocalDirectory(volumeRoot, { relativePath, page, limit, sortBy, sortOrder, search });
+    }
+
+    if (!result) {
+      throw new Error(`Directory not found or inaccessible: ${relativePath || '/'}`);
+    }
 
     return {
       volume: {
@@ -897,6 +984,81 @@ class StorageAgentHub {
         identityConfidence: volume.identity_confidence
       },
       ...result
+    };
+  }
+
+  // Local directory browsing fallback
+  browseLocalDirectory(volumeRoot, { relativePath = '', page = 1, limit = 50, sortBy = 'name', sortOrder = 'asc', search = '' }) {
+    const targetDir = relativePath ? path.resolve(volumeRoot, relativePath) : path.resolve(volumeRoot);
+    if (!fs.existsSync(targetDir)) {
+      throw new Error(`Directory not found: ${relativePath || '/'}`);
+    }
+    const stat = fs.statSync(targetDir);
+    if (!stat.isDirectory()) {
+      throw new Error(`Target is not a directory: ${relativePath}`);
+    }
+
+    const hiddenSystemItems = new Set([
+      '$recycle.bin', 'system volume information', 'pagefile.sys',
+      'hiberfil.sys', 'swapfile.sys', 'dumpstack.log.tmp', 'config.msi', 'found.000',
+      'desktop.ini', 'thumbs.db', 'ehthumbs.db', 'ehthumbs_vista.db', '.ds_store',
+      'ntuser.dat', 'ntuser.dat.log', 'ntuser.ini', 'bootmgr', 'bootnxt'
+    ]);
+
+    const dirents = fs.readdirSync(targetDir, { withFileTypes: true });
+    let items = dirents
+      .filter(d => {
+        const nameLower = d.name.toLowerCase();
+        return (
+          !hiddenSystemItems.has(nameLower) &&
+          !d.name.startsWith('.') &&
+          !d.name.startsWith('$') &&
+          !nameLower.includes('desktop.ini') &&
+          !nameLower.includes('thumbs.db')
+        );
+      })
+      .map(d => {
+      const full = path.join(targetDir, d.name);
+      let size = 0;
+      let modified = new Date();
+      try {
+        const s = fs.statSync(full);
+        size = s.size;
+        modified = s.mtime;
+      } catch (e) {}
+
+      return {
+        name: d.name,
+        isDirectory: d.isDirectory(),
+        size: d.isDirectory() ? 0 : size,
+        modifiedAt: modified,
+        relativePath: relativePath ? `${relativePath}/${d.name}`.replace(/\\/g, '/') : d.name
+      };
+    });
+
+    if (search) {
+      items = items.filter(i => i.name.toLowerCase().includes(search.toLowerCase()));
+    }
+
+    items.sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) {
+        return a.isDirectory ? -1 : 1;
+      }
+      return sortOrder === 'desc' ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name);
+    });
+
+    const totalItems = items.length;
+    const startIndex = (page - 1) * limit;
+    const paginated = items.slice(startIndex, startIndex + limit);
+
+    return {
+      currentPath: relativePath || '/',
+      parentPath: relativePath ? path.dirname(relativePath).replace(/\\/g, '/') : null,
+      page,
+      limit,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit) || 1,
+      items: paginated
     };
   }
 
@@ -972,13 +1134,20 @@ class StorageAgentHub {
       length
     }, 30000);
 
-    const buffer = result.dataBuffer ? Buffer.from(result.dataBuffer) : (result.dataBase64 ? Buffer.from(result.dataBase64, 'base64') : Buffer.alloc(0));
+    const buffer = result.dataBase64 ? Buffer.from(result.dataBase64, 'base64') : (result.dataBuffer ? Buffer.from(result.dataBuffer) : Buffer.alloc(0));
     return {
       buffer,
       startByte: result.startByte,
       endByte: result.endByte,
       fileSize: result.fileSize
     };
+  }
+
+  isAgentConnected(agentId) {
+    if (agentId) {
+      return !!this.agents.get(agentId)?.authenticated;
+    }
+    return this.hasConnectedAgent();
   }
 
   hasConnectedAgent() {

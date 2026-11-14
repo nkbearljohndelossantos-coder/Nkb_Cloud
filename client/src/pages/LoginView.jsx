@@ -26,12 +26,7 @@ export default function LoginView() {
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col justify-center py-12 sm:px-6 lg:px-8 select-none">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center space-y-3">
-        <div className="w-12 h-12 rounded bg-nkb-gold-500 mx-auto flex items-center justify-center text-nkb-navy-950 font-bold shadow-md">
-          <Cloud className="w-7 h-7 text-nkb-navy-950" />
-        </div>
-        <h2 className="text-2xl font-bold tracking-tight text-white">
-          NKB <span className="text-nkb-gold-400">CLOUD</span>
-        </h2>
+        <img src="/logo.png" alt="NKB Cloud Logo" className="h-28 w-auto mx-auto object-contain drop-shadow-xl" />
         <p className="text-xs text-slate-400 font-medium">
           Private Cloud Storage & File Management Platform &bull; NKB Manufacturing
         </p>

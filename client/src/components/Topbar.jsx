@@ -9,16 +9,26 @@ import {
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
-  HelpCircle
+  HelpCircle,
+  Menu
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
-export default function Topbar({ searchQuery, setSearchQuery, onRefresh, agentConnected, storageOverview }) {
+export default function Topbar({ searchQuery, setSearchQuery, onRefresh, agentConnected, storageOverview, onToggleMobileMenu }) {
   const { user, logout } = useAuth();
   const [profileOpen, setProfileOpen] = useState(false);
 
   return (
-    <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between z-10 select-none">
+    <header className="h-16 bg-white border-b border-slate-200 px-4 md:px-6 flex items-center justify-between z-10 select-none">
+      {/* Mobile Menu Toggle Button */}
+      <button
+        onClick={onToggleMobileMenu}
+        className="md:hidden mr-3 p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md focus:outline-none"
+        title="Open navigation menu"
+      >
+        <Menu className="w-5 h-5" />
+      </button>
+
       {/* Global Search Input */}
       <div className="flex-1 max-w-xl">
         <div className="relative">
@@ -34,15 +44,15 @@ export default function Topbar({ searchQuery, setSearchQuery, onRefresh, agentCo
       </div>
 
       {/* Right Controls: Agent Status, Refresh, User Profile */}
-      <div className="flex items-center space-x-4 ml-6">
+      <div className="flex items-center space-x-2 md:space-x-4 ml-4 md:ml-6">
         {/* Storage Agent Connection Indicator */}
         <div
           title={
             agentConnected
-              ? 'Windows Storage Host Agent is connected and streaming I/O'
-              : 'Windows Storage Host is currently offline. Drives are temporarily unavailable.'
+              ? 'NKB Storage Host Agent is connected and streaming I/O'
+              : 'NKB Storage Host is currently offline. Drives are temporarily unavailable.'
           }
-          className={`flex items-center space-x-2 px-3 py-1.5 rounded border text-xs font-medium cursor-default transition ${
+          className={`hidden sm:flex items-center space-x-2 px-3 py-1.5 rounded border text-xs font-medium cursor-default transition ${
             agentConnected
               ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
               : 'bg-amber-50 border-amber-200 text-amber-800'

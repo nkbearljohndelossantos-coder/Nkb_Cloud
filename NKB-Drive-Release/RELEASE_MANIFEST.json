@@ -1,0 +1,101 @@
+﻿{
+    "windows_installer":  "NKBDriveSetup.exe",
+    "files":  [
+                  {
+                      "Path":  "NKBDrive.exe",
+                      "Bytes":  201728,
+                      "SHA256":  "F1B779AA63176759034940899BEAD56CB8110E731FA8938DA7C8FBBBBC6E140A"
+                  },
+                  {
+                      "Path":  "NKBDriveSetup.exe",
+                      "Bytes":  1177600,
+                      "SHA256":  "A857F035BB87698B8825BDF6507A0260E035EF1F7A8F4AA73BEE7F58C3BBD14B"
+                  },
+                  {
+                      "Path":  "docs/ADMIN_DEPLOYMENT_GUIDE.md",
+                      "Bytes":  2979,
+                      "SHA256":  "5B9CFA52E505A5C8ED7D9A490CD37B192889973489FF2DEA4711DA73AFC79EF7"
+                  },
+                  {
+                      "Path":  "docs/EMPLOYEE_USER_GUIDE.md",
+                      "Bytes":  2194,
+                      "SHA256":  "5FFAB441BDBCE90DD9122A05968CC003C60791E2B1785003F1F3BFC54BDAB193"
+                  },
+                  {
+                      "Path":  "docs/STORAGE_INFRASTRUCTURE_GUIDE.md",
+                      "Bytes":  3566,
+                      "SHA256":  "5E61AC51BFEBE6805637CF22AAD8FBC32D4B36EBBD588EDE1D016BE35D648B99"
+                  },
+                  {
+                      "Path":  "docs/TROUBLESHOOTING_RUNBOOK.md",
+                      "Bytes":  2349,
+                      "SHA256":  "6E67F5D9FE99C28D7C65521DF61B2D3CA8C56D56CA3568A3E9A8C8CA22AC1F43"
+                  },
+                  {
+                      "Path":  "macOS/build_dmg.sh",
+                      "Bytes":  2834,
+                      "SHA256":  "513CB9AB9ADB378C8A803E0E7498ACC8A149422EA9ADBC964609B3B171823442"
+                  },
+                  {
+                      "Path":  "macOS/Makefile",
+                      "Bytes":  840,
+                      "SHA256":  "C7A162E83F3272BD89B505817DC4DD90A60CB599AE7F70EFC6F0A39345B0D8B6"
+                  },
+                  {
+                      "Path":  "macOS/Package.swift",
+                      "Bytes":  520,
+                      "SHA256":  "C5ACC7799AC8A9D4BF400D984942E55097B84FF314D265FB7CE927C76C8BF968"
+                  },
+                  {
+                      "Path":  "macOS/README.md",
+                      "Bytes":  2372,
+                      "SHA256":  "1DC7ECAF2BF647A2027474EE8C7C67B526ADBFC7BE8B2933A8656C0010374CE5"
+                  },
+                  {
+                      "Path":  "macOS/Resources/Entitlements.plist",
+                      "Bytes":  594,
+                      "SHA256":  "33B318430062A61DE55646B210C29AA6447C8FAE427710C23B0BC7750EA90E3F"
+                  },
+                  {
+                      "Path":  "macOS/Resources/Info.plist",
+                      "Bytes":  868,
+                      "SHA256":  "E6D0004A1F4A7F14CCA4C53E0EBA6CE71708748AD8753AB3527F4A7C27715EB0"
+                  },
+                  {
+                      "Path":  "macOS/Sources/NKBDrive/AppDelegate.swift",
+                      "Bytes":  5220,
+                      "SHA256":  "CF34FA75CB999091A2EF1944BE068DB3F7BD25A02EE46487F9343C4F7837C57B"
+                  },
+                  {
+                      "Path":  "macOS/Sources/NKBDrive/FileProviderExtension.swift",
+                      "Bytes":  3342,
+                      "SHA256":  "8411812A66782AB4CEBC4CCEB3B1A0968EFD7719A19C8495BB15C43E0FA716BE"
+                  },
+                  {
+                      "Path":  "macOS/Sources/NKBDrive/KeychainVault.swift",
+                      "Bytes":  1956,
+                      "SHA256":  "41D90B753EF2005BC90FB117E4552EA1F498D307F743A94CABD48CA76707282F"
+                  },
+                  {
+                      "Path":  "macOS/Sources/NKBDrive/main.swift",
+                      "Bytes":  244,
+                      "SHA256":  "1B2260713625124DCE5FDC3CE05ED98FB1562549582AAA7A37EE51479F8E7197"
+                  },
+                  {
+                      "Path":  "macOS/Sources/NKBDrive/StagingApiClient.swift",
+                      "Bytes":  2649,
+                      "SHA256":  "BBFB41057A1F4BAD72901965435BBCBDBE15977E78EE82FBACD1A7BC3FFB9999"
+                  },
+                  {
+                      "Path":  "macOS/Sources/NKBDrive/SyncEngine.swift",
+                      "Bytes":  1533,
+                      "SHA256":  "3A91BF364098B04EA87BCA2244E38B5649BB2A518774719ED10DA5A5BB5B4CDF"
+                  }
+              ],
+    "release_name":  "NKB Drive Production Release",
+    "backend_compatible_version":  "v2.1.0",
+    "generated_at":  "2026-11-13T14:28:56.5977575+08:00",
+    "version":  "2.1.0",
+    "windows_standalone":  "NKBDrive.exe",
+    "macos_package":  "macOS/"
+}

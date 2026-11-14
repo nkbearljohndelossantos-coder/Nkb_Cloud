@@ -3,6 +3,8 @@ import path from 'path';
 import crypto from 'crypto';
 import db from '../config/db.js';
 import agentHub from '../services/agentHub.js';
+import { verifyFolderAccess, verifyFileAccess } from '../services/authorizationService.js';
+import { recordChangeEvent } from './driveController.js';
 
 export function detectCategory(mimeType, ext) {
   const mime = (mimeType || '').toLowerCase();
@@ -40,8 +42,25 @@ export async function getExplorerItems(req, res) {
     const userId = req.user.id;
     const userRole = req.user.role_name;
 
-    let folderQuery = 'SELECT * FROM folders WHERE is_trashed = FALSE';
-    let fileQuery = 'SELECT * FROM files WHERE is_trashed = FALSE';
+    let folderQuery = `
+      SELECT folders.* 
+      FROM folders 
+      LEFT JOIN storage_volumes sv ON folders.preferred_volume_id = sv.id
+      WHERE folders.is_trashed = FALSE
+        AND (folders.preferred_volume_id IS NULL OR sv.status = 'ONLINE')
+    `;
+    let fileQuery = `
+      SELECT files.*,
+        sv.status AS volume_status,
+        sv.assigned_name AS volume_assigned_name,
+        CASE 
+          WHEN sv.status != 'ONLINE' THEN 'UNAVAILABLE_DRIVE_OFFLINE'
+          ELSE files.status
+        END AS status
+      FROM files
+      LEFT JOIN storage_volumes sv ON files.storage_volume_id = sv.id
+      WHERE files.is_trashed = FALSE
+    `;
     const folderParams = [];
     const fileParams = [];
 
@@ -92,18 +111,93 @@ export async function getExplorerItems(req, res) {
       if (!folderId) {
         folderQuery += ' AND parent_id IS NULL';
       } else {
+        const auth = await verifyFolderAccess(userId, req.user.department_id, userRole, folderId, 'VIEWER');
+        if (!auth.allowed) {
+          return res.status(403).json({ error: 'Access denied: ' + auth.reason });
+        }
         folderQuery += ' AND parent_id = $1';
         folderParams.push(folderId);
       }
       fileQuery += folderId ? ' AND folder_id = $1' : ' AND 1 = 0';
       if (folderId) fileParams.push(folderId);
+    } else if (view === 'shared-with-me') {
+      const deptId = req.user.department_id;
+      folderQuery = `
+        SELECT DISTINCT f.*,
+          s.permission_level as shared_permission,
+          s.shared_with_department_id,
+          d.name as shared_department_name,
+          u.full_name as owner_name
+        FROM folders f
+        JOIN file_shares s ON s.folder_id = f.id
+        LEFT JOIN departments d ON s.shared_with_department_id = d.id
+        LEFT JOIN users u ON f.owner_id = u.id
+        WHERE f.is_trashed = FALSE
+          AND s.is_revoked = FALSE
+          AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)
+          AND f.owner_id != $1
+          AND (s.shared_with_user_id = $1 OR (s.shared_with_department_id IS NOT NULL AND s.shared_with_department_id = $2))
+      `;
+      fileQuery = `
+        SELECT DISTINCT fi.*,
+          s.permission_level as shared_permission,
+          s.shared_with_department_id,
+          d.name as shared_department_name,
+          u.full_name as owner_name
+        FROM files fi
+        JOIN file_shares s ON s.file_id = fi.id
+        LEFT JOIN departments d ON s.shared_with_department_id = d.id
+        LEFT JOIN users u ON fi.owner_id = u.id
+        WHERE fi.is_trashed = FALSE
+          AND s.is_revoked = FALSE
+          AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)
+          AND fi.owner_id != $1
+          AND (s.shared_with_user_id = $1 OR (s.shared_with_department_id IS NOT NULL AND s.shared_with_department_id = $2))
+      `;
+      folderParams.push(userId, deptId);
+      fileParams.push(userId, deptId);
     } else {
       if (!folderId || folderId === 'root' || folderId === 'null') {
-        folderQuery += ' AND parent_id IS NULL AND is_shared_drive = FALSE AND owner_id = $1';
-        fileQuery += ' AND folder_id IS NULL AND owner_id = $1';
-        folderParams.push(userId);
-        fileParams.push(userId);
+        if (userRole === 'SUPER ADMIN') {
+          folderQuery += ' AND parent_id IS NULL AND is_shared_drive = FALSE';
+          fileQuery += ' AND folder_id IS NULL';
+        } else {
+          const deptId = req.user.department_id;
+          folderQuery += `
+            AND parent_id IS NULL 
+            AND is_shared_drive = FALSE 
+            AND (
+              owner_id = $1 
+              OR EXISTS (
+                SELECT 1 FROM file_shares fs 
+                WHERE fs.folder_id = folders.id 
+                  AND fs.is_revoked = FALSE 
+                  AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
+                  AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2))
+              )
+            )
+          `;
+          fileQuery += `
+            AND folder_id IS NULL 
+            AND (
+              owner_id = $1 
+              OR EXISTS (
+                SELECT 1 FROM file_shares fs 
+                WHERE fs.file_id = files.id 
+                  AND fs.is_revoked = FALSE 
+                  AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
+                  AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2))
+              )
+            )
+          `;
+          folderParams.push(userId, deptId);
+          fileParams.push(userId, deptId);
+        }
       } else {
+        const auth = await verifyFolderAccess(userId, req.user.department_id, userRole, folderId, 'VIEWER');
+        if (!auth.allowed) {
+          return res.status(403).json({ error: 'Access denied: ' + auth.reason });
+        }
         folderQuery += ' AND parent_id = $1';
         fileQuery += ' AND folder_id = $1';
         folderParams.push(folderId);
@@ -115,6 +209,51 @@ export async function getExplorerItems(req, res) {
       db.query(folderQuery, folderParams),
       db.query(fileQuery, fileParams)
     ]);
+
+    // Attach active department share metadata to folders so UI can render badges
+    const rawFolders = foldersRes.rows || [];
+    let enrichedFolders = rawFolders;
+    const folderIds = rawFolders.map(f => f.id);
+
+    if (folderIds.length > 0) {
+      const sharesInfoRes = await db.query(
+        `SELECT fs.folder_id, fs.permission_level, 
+                fs.shared_with_department_id as dept_id, d.name as dept_name, d.code as dept_code,
+                fs.shared_with_user_id as user_id, u.full_name as user_name, u.email as user_email
+         FROM file_shares fs
+         LEFT JOIN departments d ON fs.shared_with_department_id = d.id
+         LEFT JOIN users u ON fs.shared_with_user_id = u.id
+         WHERE fs.folder_id = ANY($1::uuid[])
+           AND fs.is_revoked = FALSE
+           AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)`,
+        [folderIds]
+      );
+      const sharesMap = new Map();
+      for (const row of (sharesInfoRes.rows || [])) {
+        if (!sharesMap.has(row.folder_id)) sharesMap.set(row.folder_id, []);
+        sharesMap.get(row.folder_id).push(row);
+      }
+
+      enrichedFolders = rawFolders.map(f => {
+        const itemShares = sharesMap.get(f.id) || [];
+        const deptShares = itemShares.filter(s => s.dept_id !== null);
+        const userShares = itemShares.filter(s => s.user_id !== null);
+        const isSharedWithMyDept = deptShares.some(s => s.dept_id === req.user.department_id);
+        const isSharedWithMeDirect = userShares.some(s => s.user_id === req.user.id);
+        const myShares = itemShares.filter(s => s.user_id === req.user.id || s.dept_id === req.user.department_id);
+        const hasWriteAccess = myShares.some(s => ['CONTRIBUTOR', 'EDITOR', 'EDIT'].includes(s.permission_level)) || f.owner_id === req.user.id || req.user.role_name === 'SUPER ADMIN';
+
+        return {
+          ...f,
+          departmentShares: deptShares,
+          userShares: userShares,
+          isSharedWithMe: isSharedWithMyDept || isSharedWithMeDirect,
+          isSharedWithMyDepartment: isSharedWithMyDept,
+          canWrite: hasWriteAccess,
+          myPermission: hasWriteAccess ? 'READ_WRITE' : (myShares.length > 0 ? 'READ_ONLY' : 'READ_WRITE')
+        };
+      });
+    }
 
     let breadcrumbs = [];
     if (folderId && folderId !== 'root' && folderId !== 'null') {
@@ -131,7 +270,7 @@ export async function getExplorerItems(req, res) {
     }
 
     res.json({
-      folders: foldersRes.rows || [],
+      folders: enrichedFolders,
       files: filesRes.rows || [],
       breadcrumbs
     });
@@ -156,6 +295,13 @@ export async function createFolder(req, res) {
     const folderId = crypto.randomUUID();
     const pid = parentId && parentId !== 'root' ? parentId : null;
 
+    if (pid) {
+      const auth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, pid, 'CONTRIBUTOR');
+      if (!auth.allowed) {
+        return res.status(403).json({ error: 'Access denied to target parent folder: ' + auth.reason });
+      }
+    }
+
     const newFolderRes = await db.query(
       `INSERT INTO folders (id, name, parent_id, owner_id, department_id, is_shared_drive, color, preferred_volume_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -167,6 +313,17 @@ export async function createFolder(req, res) {
        VALUES ($1, $2, $3, $4, $5)`,
       [req.user.id, 'FOLDER_CREATED', 'FOLDER', folderId, JSON.stringify({ name, parentId: pid })]
     );
+
+    try {
+      recordChangeEvent({
+        eventType: 'FOLDER_CREATED',
+        entityType: 'FOLDER',
+        entityId: folderId,
+        parentId: pid,
+        name: name.trim(),
+        performedBy: req.user.id
+      });
+    } catch {}
 
     res.status(201).json({
       message: 'Folder created successfully',
@@ -198,9 +355,20 @@ export async function initiateUploadSession(req, res) {
 
     let selectedVolume = null;
 
-    if (targetVolumeId) {
-      // Explicit placement
-      const volRes = await db.query("SELECT * FROM storage_volumes WHERE id = $1 AND status = 'ONLINE'", [targetVolumeId]);
+    const pid = folderId && folderId !== 'root' ? folderId : null;
+
+    // Check if target folder has an assigned preferred storage volume
+    let targetVolId = targetVolumeId;
+    if (!targetVolId && pid) {
+      const folderVolRes = await db.query('SELECT preferred_volume_id FROM folders WHERE id = $1', [pid]);
+      if (folderVolRes.rows && folderVolRes.rows[0]?.preferred_volume_id) {
+        targetVolId = folderVolRes.rows[0].preferred_volume_id;
+      }
+    }
+
+    if (targetVolId) {
+      // Explicit or folder-inherited placement
+      const volRes = await db.query("SELECT * FROM storage_volumes WHERE id = $1 AND status = 'ONLINE'", [targetVolId]);
       if (volRes.rows && volRes.rows[0]) {
         selectedVolume = volRes.rows[0];
       }
@@ -208,15 +376,15 @@ export async function initiateUploadSession(req, res) {
 
     if (!selectedVolume) {
       if (policy === 'DEFAULT_DRIVE') {
-        const defRes = await db.query("SELECT * FROM storage_volumes WHERE is_default = TRUE AND status = 'ONLINE'");
+        const defRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' ORDER BY created_at ASC");
         if (defRes.rows && defRes.rows[0]) {
           selectedVolume = defRes.rows[0];
         }
       }
 
       if (!selectedVolume) {
-        // PRIORITY_POOL (or fallback from default): sort by priority ASC, free space DESC
-        const poolRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' ORDER BY priority ASC, free_bytes DESC");
+        // PRIORITY_POOL (or fallback from default): sort by free space DESC, created_at ASC
+        const poolRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' ORDER BY free_bytes DESC, created_at ASC");
         const candidates = (poolRes.rows || []).filter(v => BigInt(v.free_bytes || 0) >= BigInt(totalSizeBytes));
         if (candidates.length > 0) {
           selectedVolume = candidates[0];
@@ -226,12 +394,19 @@ export async function initiateUploadSession(req, res) {
 
     if (!selectedVolume) {
       return res.status(507).json({
-        error: 'Insufficient storage capacity on connected online storage devices. Please expand or reconnect storage.'
+        error: 'NO_ACTIVE_STORAGE_VOLUME',
+        message: 'No active storage volume with sufficient free space is available. Please add or activate storage in Admin Storage Management.'
       });
     }
 
     const sessionId = crypto.randomUUID();
-    const pid = folderId && folderId !== 'root' ? folderId : null;
+
+    if (pid) {
+      const auth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, pid, 'CONTRIBUTOR');
+      if (!auth.allowed) {
+        return res.status(403).json({ error: 'Access denied to target upload folder: ' + auth.reason });
+      }
+    }
 
     await db.query(
       `INSERT INTO upload_sessions (id, user_id, target_folder_id, storage_volume_id, file_name, total_size_bytes, total_chunks, expected_sha256, status)
@@ -264,6 +439,15 @@ export async function getUploadSessionStatus(req, res) {
       return res.status(404).json({ error: 'Upload session not found' });
     }
     const session = sessRes.rows[0];
+
+    // Enforce session ownership to prevent cross-user session enumeration
+    const isSuperAdmin = (req.user.role_name === 'SUPER ADMIN' || req.user.role === 'SUPER ADMIN');
+    if (session.user_id !== req.user.id && !isSuperAdmin) {
+      return res.status(403).json({
+        error: 'Access denied: You do not own this upload session',
+        code: 'UPLOAD_SESSION_OWNERSHIP_VIOLATION'
+      });
+    }
 
     const chunksRes = await db.query(
       'SELECT chunk_index, chunk_size_bytes, is_verified FROM file_chunks WHERE session_id = $1 ORDER BY chunk_index ASC',
@@ -328,6 +512,15 @@ export async function uploadChunk(req, res) {
     }
     const session = sessRes.rows[0];
 
+    // Enforce session ownership to prevent cross-user chunk injection
+    const isSuperAdmin = (req.user.role_name === 'SUPER ADMIN' || req.user.role === 'SUPER ADMIN');
+    if (session.user_id !== req.user.id && !isSuperAdmin) {
+      return res.status(403).json({
+        error: 'Access denied: You do not own this upload session',
+        code: 'UPLOAD_SESSION_OWNERSHIP_VIOLATION'
+      });
+    }
+
     // Check if chunk is already idempotently recorded
     const existingChunk = await db.query(
       'SELECT * FROM file_chunks WHERE session_id = $1 AND chunk_index = $2',
@@ -386,6 +579,15 @@ export async function finalizeUpload(req, res) {
       return res.status(404).json({ error: 'Session not found' });
     }
     const session = sessRes.rows[0];
+
+    // Enforce session ownership to prevent cross-user finalization hijack
+    const isSuperAdmin = (req.user.role_name === 'SUPER ADMIN' || req.user.role === 'SUPER ADMIN');
+    if (session.user_id !== req.user.id && !isSuperAdmin) {
+      return res.status(403).json({
+        error: 'Access denied: You do not own this upload session',
+        code: 'UPLOAD_SESSION_OWNERSHIP_VIOLATION'
+      });
+    }
     const ext = path.extname(session.file_name);
     const relativeStoragePath = `${session.id}${ext}`;
     const category = detectCategory('', ext);
@@ -439,6 +641,18 @@ export async function finalizeUpload(req, res) {
       [session.user_id, 'FILE_FINALIZED_VERIFIED', 'FILE', fileId, JSON.stringify({ fileName: session.file_name, sizeBytes: session.total_size_bytes, sha256: sha256Hash })]
     );
 
+    recordChangeEvent({
+      eventType: 'FILE_CREATE',
+      entityType: 'FILE',
+      entityId: fileId,
+      parentId: session.folder_id,
+      name: session.file_name,
+      sizeBytes: session.total_size_bytes,
+      sha256: sha256Hash,
+      performedBy: session.user_id,
+      originDeviceId: req.headers['x-device-id'] || null
+    }).catch(err => console.error('[CHANGE JOURNAL ERROR]', err.message));
+
     res.json({
       message: 'Upload finalized and integrity verified via SHA-256',
       file: newFileRes.rows[0] || { id: fileId, name: session.file_name, size_bytes: session.total_size_bytes, sha256: sha256Hash }
@@ -458,21 +672,32 @@ export async function directUpload(req, res) {
 
     const { originalname, buffer, size, mimetype } = req.file;
     const folderId = req.body.folderId && req.body.folderId !== 'root' ? req.body.folderId : null;
+
+    if (folderId) {
+      const auth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, folderId, 'CONTRIBUTOR');
+      if (!auth.allowed) {
+        return res.status(403).json({ error: 'Access denied to target upload folder: ' + auth.reason });
+      }
+    }
     const ext = path.extname(originalname);
     const category = detectCategory(mimetype, ext);
 
-    const volRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' ORDER BY is_default DESC, priority ASC");
-    if (!volRes.rows || volRes.rows.length === 0) {
-      return res.status(507).json({ error: 'No online storage drives available. Please ensure the Windows Storage Agent is online.' });
+    const volRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' ORDER BY created_at ASC");
+    const eligibleVols = (volRes.rows || []).filter(v => BigInt(v.free_bytes || 0) >= BigInt(size));
+    if (eligibleVols.length === 0) {
+      return res.status(507).json({
+        error: 'NO_ACTIVE_STORAGE_VOLUME',
+        message: 'No active storage volume with sufficient free space is available.'
+      });
     }
-    const volume = volRes.rows[0];
+    const volume = eligibleVols[0];
 
     const fileId = crypto.randomUUID();
     const relativeStoragePath = `${fileId}${ext}`;
     const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
 
     if (agentHub.hasConnectedAgent()) {
-      await agentHub.writeChunkToStorage(volume.id, relativeStoragePath, 0, buffer.toString('base64'), true, sha256);
+      await agentHub.writeChunkToStorage(volume.id, relativeStoragePath, 0, buffer, true, sha256);
     } else {
       const storageRoot = volume.mount_path || path.join(process.cwd(), 'local_storage');
       if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
@@ -499,6 +724,18 @@ export async function directUpload(req, res) {
     await db.query('UPDATE users SET used_storage_bytes = used_storage_bytes + $1 WHERE id = $2', [size, req.user.id]);
     await db.query('UPDATE storage_volumes SET used_bytes = used_bytes + $1, free_bytes = free_bytes - $1 WHERE id = $2', [size, volume.id]);
 
+    recordChangeEvent({
+      eventType: 'FILE_CREATE',
+      entityType: 'FILE',
+      entityId: fileId,
+      parentId: folderId,
+      name: originalname,
+      sizeBytes: size,
+      sha256,
+      performedBy: req.user.id,
+      originDeviceId: req.headers['x-device-id'] || null
+    }).catch(err => console.error('[CHANGE JOURNAL ERROR]', err.message));
+
     res.status(201).json({
       message: 'File uploaded successfully',
       file: newFileRes.rows[0] || { id: fileId, name: originalname, size_bytes: size, sha256_hash: sha256 }
@@ -514,6 +751,12 @@ export async function downloadFile(req, res) {
   try {
     const { id } = req.params;
     const isInline = req.query.inline === 'true';
+
+    const reqPerm = isInline ? 'VIEWER' : 'DOWNLOADER';
+    const auth = await verifyFileAccess(req.user?.id, req.user?.department_id, req.user?.role_name, id, reqPerm);
+    if (!auth.allowed) {
+      return res.status(403).json({ error: 'Access denied: ' + auth.reason });
+    }
 
     const fileRes = await db.query('SELECT * FROM files WHERE id = $1', [id]);
     if (!fileRes.rows || !fileRes.rows[0]) {
@@ -633,12 +876,26 @@ export async function renameItem(req, res) {
     if (!newName || !newName.trim()) return res.status(400).json({ error: 'New name required' });
 
     if (itemType === 'folder') {
+      const auth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, id, 'EDITOR');
+      if (!auth.allowed) return res.status(403).json({ error: 'Access denied: ' + auth.reason });
       await db.query('UPDATE folders SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [newName.trim(), id]);
     } else {
+      const auth = await verifyFileAccess(req.user.id, req.user.department_id, req.user.role_name, id, 'EDITOR');
+      if (!auth.allowed) return res.status(403).json({ error: 'Access denied: ' + auth.reason });
       const ext = path.extname(newName);
       const cat = detectCategory('', ext);
       await db.query('UPDATE files SET name = $1, category = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3', [newName.trim(), cat, id]);
     }
+
+    try {
+      recordChangeEvent({
+        eventType: 'ITEM_RENAMED',
+        entityType: itemType === 'folder' ? 'FOLDER' : 'FILE',
+        entityId: id,
+        name: newName.trim(),
+        performedBy: req.user.id
+      });
+    } catch {}
 
     res.json({ message: 'Item renamed successfully' });
   } catch (err) {
@@ -654,10 +911,34 @@ export async function moveItem(req, res) {
     const pid = targetFolderId && targetFolderId !== 'root' ? targetFolderId : null;
 
     if (itemType === 'folder') {
+      const auth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, id, 'EDITOR');
+      if (!auth.allowed) return res.status(403).json({ error: 'Access denied: ' + auth.reason });
+    } else {
+      const auth = await verifyFileAccess(req.user.id, req.user.department_id, req.user.role_name, id, 'EDITOR');
+      if (!auth.allowed) return res.status(403).json({ error: 'Access denied: ' + auth.reason });
+    }
+
+    if (pid) {
+      const targetAuth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, pid, 'CONTRIBUTOR');
+      if (!targetAuth.allowed) return res.status(403).json({ error: 'Access denied to target destination folder: ' + targetAuth.reason });
+    }
+
+    if (itemType === 'folder') {
       await db.query('UPDATE folders SET parent_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [pid, id]);
     } else {
       await db.query('UPDATE files SET folder_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [pid, id]);
     }
+
+    try {
+      recordChangeEvent({
+        eventType: 'ITEM_MOVED',
+        entityType: itemType === 'folder' ? 'FOLDER' : 'FILE',
+        entityId: id,
+        parentId: pid,
+        name: 'MOVED_ITEM',
+        performedBy: req.user.id
+      });
+    } catch {}
 
     res.json({ message: 'Item moved successfully' });
   } catch (err) {
@@ -690,9 +971,13 @@ export async function trashItem(req, res) {
     const { itemType } = req.body;
 
     if (itemType === 'folder') {
+      const auth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, id, 'EDITOR');
+      if (!auth.allowed) return res.status(403).json({ error: 'Access denied: ' + auth.reason });
       await db.query('UPDATE folders SET is_trashed = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
       await db.query("INSERT INTO recycle_bin (item_type, item_id, original_name, deleted_by) VALUES ('FOLDER', $1, 'Folder', $2)", [id, req.user.id]);
     } else {
+      const auth = await verifyFileAccess(req.user.id, req.user.department_id, req.user.role_name, id, 'EDITOR');
+      if (!auth.allowed) return res.status(403).json({ error: 'Access denied: ' + auth.reason });
       const fRes = await db.query('SELECT name, size_bytes FROM files WHERE id = $1', [id]);
       await db.query('UPDATE files SET is_trashed = TRUE, trashed_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
       await db.query(
@@ -700,6 +985,16 @@ export async function trashItem(req, res) {
         [id, fRes.rows[0]?.name || 'File', fRes.rows[0]?.size_bytes || 0, req.user.id]
       );
     }
+
+    try {
+      recordChangeEvent({
+        eventType: 'ITEM_TRASHED',
+        entityType: itemType === 'folder' ? 'FOLDER' : 'FILE',
+        entityId: id,
+        name: 'TRASHED_ITEM',
+        performedBy: req.user.id
+      });
+    } catch {}
 
     res.json({ message: 'Item moved to recycle bin' });
   } catch (err) {
@@ -714,8 +1009,18 @@ export async function restoreItem(req, res) {
     const { itemType } = req.body;
 
     if (itemType === 'folder') {
+      const fRes = await db.query('SELECT owner_id FROM folders WHERE id = $1', [id]);
+      if (!fRes.rows || !fRes.rows[0]) return res.status(404).json({ error: 'Folder not found' });
+      if (fRes.rows[0].owner_id !== req.user.id && req.user.role_name !== 'SUPER ADMIN') {
+        return res.status(403).json({ error: 'Only the item owner or Super Admin may restore items' });
+      }
       await db.query('UPDATE folders SET is_trashed = FALSE WHERE id = $1', [id]);
     } else {
+      const fRes = await db.query('SELECT owner_id FROM files WHERE id = $1', [id]);
+      if (!fRes.rows || !fRes.rows[0]) return res.status(404).json({ error: 'File not found' });
+      if (fRes.rows[0].owner_id !== req.user.id && req.user.role_name !== 'SUPER ADMIN') {
+        return res.status(403).json({ error: 'Only the item owner or Super Admin may restore items' });
+      }
       await db.query('UPDATE files SET is_trashed = FALSE, trashed_at = NULL WHERE id = $1', [id]);
     }
 

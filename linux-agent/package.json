@@ -1,0 +1,19 @@
+{
+  "name": "nkb-cloud-linux-storage-agent",
+  "version": "2.1.0",
+  "description": "NKB Cloud Enterprise Linux Storage Agent Daemon",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

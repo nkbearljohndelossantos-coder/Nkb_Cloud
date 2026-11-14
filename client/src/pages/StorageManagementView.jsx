@@ -24,19 +24,43 @@ import {
   ExternalLink,
   Clock,
   Eye,
-  FolderOpen
+  FolderOpen,
+  Link2,
+  PowerOff
 } from 'lucide-react';
 import api from '../api/client';
 import { formatBytes, formatDate } from '../utils/formatters';
 
 export default function StorageManagementView({ volumes, onRefresh, agentConnected, storageOverview, onNavigateToDriveBrowser }) {
   // Navigation tabs within Storage
-  const [activeTab, setActiveTab] = useState('physical-drives'); // 'physical-drives' | 'volumes' | 'migration' | 'observations'
+  const [activeTab, setActiveTab] = useState('locations'); // 'locations' | 'physical-drives' | 'volumes' | 'observations'
   const [scanning, setScanning] = useState(false);
   const [selectedVolume, setSelectedVolume] = useState(null);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [replaceModalOpen, setReplaceModalOpen] = useState(false);
   const [verifyStatus, setVerifyStatus] = useState(null);
+
+  // Manual Storage Locations state (Phase 5.2)
+  const [newPath, setNewPath] = useState('');
+  const [newAssignedName, setNewAssignedName] = useState('');
+  const [newPurpose, setNewPurpose] = useState('GENERAL');
+  const [newPriority, setNewPriority] = useState(10);
+  const [validatingPath, setValidatingPath] = useState(false);
+  const [pathValidationResult, setPathValidationResult] = useState(null);
+  const [pathValidationError, setPathValidationError] = useState(null);
+  const [addingLocation, setAddingLocation] = useState(false);
+
+  // Controlled Removal Impact Modal state
+  const [removalModalOpen, setRemovalModalOpen] = useState(false);
+  const [volumeForRemoval, setVolumeForRemoval] = useState(null);
+  const [removalImpact, setRemovalImpact] = useState(null);
+  const [loadingImpact, setLoadingImpact] = useState(false);
+  const [confirmRemovalName, setConfirmRemovalName] = useState('');
+  const [removingLocation, setRemovingLocation] = useState(false);
+
+  // Department Storage Volume Mapping state
+  const [deptMappings, setDeptMappings] = useState([]);
+  const [loadingDeptMappings, setLoadingDeptMappings] = useState(false);
 
   // Hardware inventory state
   const [hardwareData, setHardwareData] = useState({
@@ -79,9 +103,144 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
     }
   };
 
+  // Fetch department storage mappings
+  const fetchDeptMappings = async () => {
+    setLoadingDeptMappings(true);
+    try {
+      const res = await api.get('/storage/department-mapping');
+      if (res.data && res.data.success) {
+        setDeptMappings(res.data.mappings || []);
+      }
+    } catch (err) {
+      console.error('[StorageManagement] Failed to fetch department mappings:', err);
+    } finally {
+      setLoadingDeptMappings(false);
+    }
+  };
+
   useEffect(() => {
     fetchHardwareInventory();
+    fetchDeptMappings();
   }, []);
+
+  // Path validation for manual storage addition
+  const handleValidatePath = async () => {
+    if (!newPath || !newPath.trim()) {
+      alert('Please enter a storage path to validate.');
+      return;
+    }
+    setValidatingPath(true);
+    setPathValidationError(null);
+    setPathValidationResult(null);
+    try {
+      const res = await api.post('/storage/locations/validate', { storagePath: newPath.trim() });
+      setPathValidationResult(res.data);
+    } catch (err) {
+      setPathValidationError(err.response?.data?.error || err.message);
+    } finally {
+      setValidatingPath(false);
+    }
+  };
+
+  // Add storage location (Manual Administration Workflow)
+  const handleAddLocation = async (e) => {
+    e.preventDefault();
+    if (!newPath || !newAssignedName) {
+      alert('Path and Assigned Name are required.');
+      return;
+    }
+    setAddingLocation(true);
+    try {
+      const res = await api.post('/storage/locations/add', {
+        storagePath: newPath.trim(),
+        assignedName: newAssignedName.trim(),
+        storagePurpose: newPurpose,
+        priority: parseInt(newPriority, 10) || 10,
+        autoActivate: false
+      });
+      alert(res.data.message || 'Storage location added with status PENDING_ADMIN_REVIEW.');
+      setNewPath('');
+      setNewAssignedName('');
+      setPathValidationResult(null);
+      await Promise.all([onRefresh(), fetchHardwareInventory(), fetchDeptMappings()]);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    } finally {
+      setAddingLocation(false);
+    }
+  };
+
+  // Activate location
+  const handleActivateLocation = async (vol) => {
+    try {
+      const res = await api.post(`/storage/locations/${vol.id}/activate`);
+      alert(res.data.message || 'Location activated successfully.');
+      await Promise.all([onRefresh(), fetchHardwareInventory(), fetchDeptMappings()]);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    }
+  };
+
+  // Deactivate location
+  const handleDeactivateLocation = async (vol) => {
+    if (!confirm(`Are you sure you want to deactivate "${vol.assignedName || vol.mountPath}"? It will be marked OFFLINE and new uploads will not be routed here.`)) {
+      return;
+    }
+    try {
+      const res = await api.post(`/storage/locations/${vol.id}/deactivate`);
+      alert(res.data.message || 'Location deactivated.');
+      await Promise.all([onRefresh(), fetchHardwareInventory(), fetchDeptMappings()]);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    }
+  };
+
+  // Controlled Removal Modal
+  const handleOpenRemovalModal = async (vol) => {
+    setVolumeForRemoval(vol);
+    setConfirmRemovalName('');
+    setRemovalImpact(null);
+    setLoadingImpact(true);
+    setRemovalModalOpen(true);
+    try {
+      const res = await api.get(`/storage/locations/${vol.id}/removal-impact`);
+      setRemovalImpact(res.data);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+      setRemovalModalOpen(false);
+    } finally {
+      setLoadingImpact(false);
+    }
+  };
+
+  const handleExecuteRemoval = async () => {
+    if (!volumeForRemoval) return;
+    setRemovingLocation(true);
+    try {
+      const res = await api.post(`/storage/locations/${volumeForRemoval.id}/remove`, {
+        confirmName: confirmRemovalName.trim(),
+        forceWithFiles: true
+      });
+      alert(res.data.message || 'Storage location safely retired.');
+      setRemovalModalOpen(false);
+      setVolumeForRemoval(null);
+      setRemovalImpact(null);
+      await Promise.all([onRefresh(), fetchHardwareInventory(), fetchDeptMappings()]);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    } finally {
+      setRemovingLocation(false);
+    }
+  };
+
+  const handleUpdateDeptMapping = async (folderId, volumeId) => {
+    try {
+      await api.put(`/storage/department-mapping/${folderId}`, { volumeId: volumeId || null });
+      await fetchDeptMappings();
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    }
+  };
 
   // 1. Hardware scan via Storage Agent
   const handleScanDrives = async () => {
@@ -118,6 +277,32 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
       });
       setEditModalOpen(false);
       onRefresh();
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    }
+  };
+
+  // Connect storage volume to NKB Cloud
+  const handleConnectVolume = async (vol) => {
+    try {
+      const res = await api.post(`/storage/volumes/${vol.id}/connect`);
+      alert(res.data.message || 'Volume connected successfully');
+      await Promise.all([onRefresh(), fetchHardwareInventory()]);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    }
+  };
+
+  // Disconnect storage volume from NKB Cloud
+  const handleDisconnectVolume = async (vol) => {
+    const driveName = vol.assignedName || vol.currentDriveLetter || 'Volume';
+    if (!confirm(`Are you sure you want to disconnect storage "${driveName}" from NKB Cloud? It will no longer receive new uploads or be available in cloud storage until reconnected.`)) {
+      return;
+    }
+    try {
+      const res = await api.post(`/storage/volumes/${vol.id}/disconnect`);
+      alert(res.data.message || 'Volume disconnected');
+      await Promise.all([onRefresh(), fetchHardwareInventory()]);
     } catch (err) {
       alert(err.response?.data?.error || err.message);
     }
@@ -305,6 +490,18 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
       {/* Navigation Tabs */}
       <div className="flex items-center space-x-2 border-b border-slate-200">
         <button
+          onClick={() => setActiveTab('locations')}
+          className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition ${
+            activeTab === 'locations'
+              ? 'border-nkb-navy-900 text-nkb-navy-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <FolderOpen className="w-4 h-4 text-emerald-600" />
+          <span>Configured Storage Locations ({volumes.length})</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('physical-drives')}
           className={`flex items-center space-x-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition ${
             activeTab === 'physical-drives'
@@ -340,6 +537,408 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
           <span>Observations & Conflicts ({(hardwareData.observations || []).length})</span>
         </button>
       </div>
+
+      {/* TAB 0: CONFIGURED STORAGE LOCATIONS & MANUAL ADMINISTRATION */}
+      {activeTab === 'locations' && (
+        <div className="space-y-6">
+          {/* Real Dynamic Capacity Overview Metrics */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white p-4 rounded border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
+                <span>Real Cluster Storage</span>
+                <Database className="w-4 h-4 text-emerald-600" />
+              </div>
+              <div className="text-xl font-bold text-nkb-navy-900 mt-2 font-mono">
+                {formatBytes(storageOverview?.totalStorageBytes || 0)}
+              </div>
+              <div className="text-[10px] text-emerald-700 font-semibold mt-1 flex items-center space-x-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                <span>DYNAMIC FS INSPECTION</span>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
+                <span>Used Capacity</span>
+                <Archive className="w-4 h-4 text-blue-600" />
+              </div>
+              <div className="text-xl font-bold text-nkb-navy-900 mt-2 font-mono">
+                {formatBytes(storageOverview?.usedStorageBytes || 0)}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">
+                {storageOverview?.usagePercentage || 0}% cluster utilization
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
+                <span>Free Space Available</span>
+                <HardDrive className="w-4 h-4 text-emerald-600" />
+              </div>
+              <div className="text-xl font-bold text-nkb-navy-900 mt-2 font-mono">
+                {formatBytes(storageOverview?.freeStorageBytes || 0)}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">
+                Ready for incoming uploads
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
+                <span>Storage Volumes</span>
+                <Layers className="w-4 h-4 text-nkb-gold-500" />
+              </div>
+              <div className="text-xl font-bold text-nkb-navy-900 mt-2 font-mono">
+                {storageOverview?.connectedDrives || 0} Online
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">
+                {storageOverview?.pendingDrives || 0} Pending &bull; {storageOverview?.offlineDrives || 0} Offline
+              </div>
+            </div>
+          </div>
+
+          {/* Double Counting Guard Alert */}
+          {storageOverview?.duplicateRootsDetected && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded text-amber-900 text-xs flex items-start space-x-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <div className="font-bold">Underlying Filesystem Root Deduplication Active</div>
+                <div className="text-[11px] text-amber-800 mt-0.5">
+                  Multiple storage locations share the same physical filesystem root. The platform double-counting guard prevents duplicate capacity summation, ensuring true physical storage is presented.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Section: Manual Storage Administration (External Hard Drives / Mount Paths) */}
+          <div className="bg-white rounded border border-slate-200 p-5 shadow-sm space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-2">
+                <Plus className="w-5 h-5 text-emerald-600" />
+                <h3 className="font-bold text-sm text-nkb-navy-900">
+                  Manual Storage Administration (External USB / HDD / SSD / Server Paths)
+                </h3>
+              </div>
+              <span className="text-[11px] text-slate-500">
+                NO NAS Required &bull; Explicit Admin Validation Workflow
+              </span>
+            </div>
+
+            <form onSubmit={handleAddLocation} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="md:col-span-2 space-y-1">
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Storage Mounted Path
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="text"
+                      value={newPath}
+                      onChange={(e) => {
+                        setNewPath(e.target.value);
+                        setPathValidationResult(null);
+                        setPathValidationError(null);
+                      }}
+                      placeholder="e.g. D:\NKB_STORAGE\DRIVE_01 or C:\NKB-Storage-External-01"
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-nkb-navy-900 font-mono"
+                    />
+                    <button
+                      type="button"
+                      disabled={validatingPath || !newPath}
+                      onClick={handleValidatePath}
+                      className="px-3 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 rounded text-xs font-semibold border border-slate-300 flex items-center space-x-1.5 transition"
+                    >
+                      <CheckCircle2 className={`w-3.5 h-3.5 ${validatingPath ? 'animate-spin' : 'text-emerald-600'}`} />
+                      <span>{validatingPath ? 'Validating...' : 'Validate Path'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Physical path on the designated server or external hard drive mount point.
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Assigned Display Name
+                  </label>
+                  <input
+                    type="text"
+                    value={newAssignedName}
+                    onChange={(e) => setNewAssignedName(e.target.value)}
+                    placeholder="e.g. External HDD Unit 01"
+                    className="w-full px-3 py-2 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-nkb-navy-900"
+                  />
+                </div>
+              </div>
+
+              {/* Validation Result Feedback Card */}
+              {pathValidationResult && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded text-xs space-y-2">
+                  <div className="font-bold text-emerald-900 flex items-center space-x-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Path Verified & Read/Write Accessible</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono text-emerald-800">
+                    <div>Root: <span className="font-bold">{pathValidationResult.root}</span></div>
+                    <div>Real Total: <span className="font-bold">{formatBytes(pathValidationResult.totalBytes)}</span></div>
+                    <div>Real Free: <span className="font-bold">{formatBytes(pathValidationResult.freeBytes)}</span></div>
+                    <div>Real Used: <span className="font-bold">{formatBytes(pathValidationResult.usedBytes)}</span></div>
+                  </div>
+                  {pathValidationResult.warning && (
+                    <div className="text-[11px] text-amber-800 bg-amber-50 p-2 rounded border border-amber-200 font-sans">
+                      {pathValidationResult.warning}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Validation Error Feedback */}
+              {pathValidationError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700 flex items-center space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />
+                  <span>{pathValidationError}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Storage Purpose
+                  </label>
+                  <select
+                    value={newPurpose}
+                    onChange={(e) => setNewPurpose(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-nkb-navy-900"
+                  >
+                    <option value="GENERAL">General Purpose Storage</option>
+                    <option value="BACKUP_AND_ARCHIVE">Backup & Archive Storage</option>
+                    <option value="DEPARTMENT_ISOLATED">Department Isolated Storage</option>
+                    <option value="HIGH_PERFORMANCE_NVME">High-Performance NVMe Cache</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Placement Priority (1-100)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={newPriority}
+                    onChange={(e) => setNewPriority(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-nkb-navy-900"
+                  />
+                </div>
+
+                <div className="flex items-end">
+                  <button
+                    type="submit"
+                    disabled={addingLocation || !newPath || !newAssignedName}
+                    className="w-full px-4 py-2 bg-nkb-navy-900 hover:bg-nkb-navy-800 disabled:opacity-50 text-white rounded text-xs font-bold shadow-sm transition flex items-center justify-center space-x-2"
+                  >
+                    <Plus className="w-4 h-4 text-nkb-gold-400" />
+                    <span>{addingLocation ? 'Registering...' : 'Register Storage Location'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+
+          {/* Configured Storage Locations Table */}
+          <div className="bg-white rounded border border-slate-200 overflow-hidden shadow-sm">
+            <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+              <h2 className="text-xs font-bold text-nkb-navy-900 uppercase tracking-wider flex items-center space-x-2">
+                <Database className="w-4 h-4 text-blue-600" />
+                <span>Configured Storage Locations ({volumes.length})</span>
+              </h2>
+              <span className="text-[11px] text-slate-500 font-mono">
+                Real Dynamic Capacity Computed via fs.statfsSync
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] font-bold border-b border-slate-200">
+                  <tr>
+                    <th className="p-3">Location Name</th>
+                    <th className="p-3">Mount Path</th>
+                    <th className="p-3">Filesystem</th>
+                    <th className="p-3">Real Capacity</th>
+                    <th className="p-3">Usage</th>
+                    <th className="p-3">Status</th>
+                    <th className="p-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {volumes.map((vol) => (
+                    <tr key={vol.id} className="hover:bg-slate-50 transition">
+                      <td className="p-3">
+                        <div className="font-bold text-nkb-navy-900">{vol.assignedName}</div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          Priority {vol.priority} &bull; {vol.storagePurpose}
+                        </div>
+                      </td>
+                      <td className="p-3 font-mono text-slate-600">
+                        {vol.mountPath}
+                      </td>
+                      <td className="p-3 font-mono text-slate-600">
+                        {vol.filesystem || 'NTFS'}
+                      </td>
+                      <td className="p-3">
+                        <div className="font-mono text-[11px] text-slate-800">
+                          {formatBytes(vol.totalBytes)}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {formatBytes(vol.freeBytes)} free
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center space-x-2">
+                          <div className="w-20 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="bg-emerald-600 h-1.5 rounded-full"
+                              style={{ width: `${Math.min(vol.usagePercentage || 0, 100)}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-600">
+                            {vol.usagePercentage || 0}%
+                          </span>
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        {vol.status === 'ONLINE' ? (
+                          <span className="inline-flex items-center space-x-1 text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>ONLINE</span>
+                          </span>
+                        ) : vol.status === 'PENDING_ADMIN_REVIEW' ? (
+                          <span className="inline-flex items-center space-x-1 text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                            <AlertTriangle className="w-3 h-3 text-amber-600" />
+                            <span>PENDING ACTIVATION</span>
+                          </span>
+                        ) : vol.status === 'RETIRED' ? (
+                          <span className="inline-flex items-center space-x-1 text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-300">
+                            <span>RETIRED</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center space-x-1 text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-300">
+                            <span>OFFLINE</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 text-right">
+                        <div className="flex items-center justify-end space-x-2">
+                          {vol.status !== 'ONLINE' ? (
+                            <button
+                              onClick={() => handleActivateLocation(vol)}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[11px] font-semibold transition"
+                            >
+                              Activate
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleDeactivateLocation(vol)}
+                              className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-[11px] font-semibold transition"
+                            >
+                              Deactivate
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleOpenRemovalModal(vol)}
+                            className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded text-[11px] font-semibold transition"
+                            title="Controlled removal with pre-flight check and zero destruction"
+                          >
+                            Safe Removal
+                          </button>
+                          {onNavigateToDriveBrowser && (
+                            <button
+                              onClick={() => onNavigateToDriveBrowser(vol.id)}
+                              className="px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 rounded text-[11px] font-semibold transition"
+                            >
+                              Browse Files
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Department Storage Volume Mapping Section */}
+          <div className="bg-white rounded border border-slate-200 overflow-hidden shadow-sm">
+            <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+              <h2 className="text-xs font-bold text-nkb-navy-900 uppercase tracking-wider flex items-center space-x-2">
+                <FolderOpen className="w-4 h-4 text-emerald-600" />
+                <span>Department Storage Volume Mapping ({deptMappings.length} Departments)</span>
+              </h2>
+              <span className="text-[11px] text-slate-500">
+                RBAC Isolated Department Roots &bull; Preferred Volume Assignment
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] font-bold border-b border-slate-200">
+                  <tr>
+                    <th className="p-3">Department</th>
+                    <th className="p-3">Workspace Folder</th>
+                    <th className="p-3">Preferred Storage Volume</th>
+                    <th className="p-3">Volume Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {deptMappings.map((dept) => (
+                    <tr key={dept.folder_id} className="hover:bg-slate-50 transition">
+                      <td className="p-3">
+                        <div className="font-bold text-nkb-navy-900">{dept.department_name}</div>
+                        <div className="text-[10px] font-mono text-slate-400">{dept.department_code}</div>
+                      </td>
+                      <td className="p-3 font-semibold text-slate-700 flex items-center space-x-2">
+                        <div
+                          className="w-3 h-3 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: dept.color || '#4F46E5' }}
+                        />
+                        <span>{dept.folder_name}</span>
+                      </td>
+                      <td className="p-3">
+                        <select
+                          value={dept.volume_id || ''}
+                          onChange={(e) => handleUpdateDeptMapping(dept.folder_id, e.target.value)}
+                          className="px-2 py-1 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-nkb-navy-900 font-mono bg-white"
+                        >
+                          <option value="">-- Default Storage Pool --</option>
+                          {volumes.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.assignedName} ({v.status})
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="p-3">
+                        {dept.volume_status === 'ONLINE' ? (
+                          <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                            ONLINE
+                          </span>
+                        ) : dept.volume_status ? (
+                          <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                            {dept.volume_status}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">Default Pool</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TAB 1: ACTUAL PHYSICAL DRIVES */}
       {activeTab === 'physical-drives' && (
@@ -417,7 +1016,11 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
           {/* Physical Drives Card Hierarchy */}
           <div className="space-y-6">
             {devicesList.map((dev, idx) => {
-              const devVolumes = dev.volumes || [];
+              const devVolumes = (dev.volumes || []).filter(vol => {
+                const isHidden = !vol.currentDriveLetter && (!vol.mountPath || vol.mountPath.startsWith('Partition-') || vol.mountPath.startsWith('\\\\?\\Volume'));
+                const isSystemFs = ['SYSTEM', 'RESERVED'].includes(vol.filesystem?.toUpperCase());
+                return !isHidden && !isSystemFs;
+              });
               const isOnline = dev.status === 'ONLINE';
 
               return (
@@ -567,7 +1170,16 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
                                 <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-3 gap-y-0.5">
                                   <span>Filesystem: <strong className="text-slate-700">{vol.filesystem || 'NTFS'}</strong></span>
                                   <span>&bull;</span>
-                                  <span>Status: <strong className="text-emerald-700">{vol.status}</strong></span>
+                                  <span>
+                                    Cloud Status:{' '}
+                                    {vol.status === 'ONLINE' ? (
+                                      <span className="text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded text-[10px]">CONNECTED</span>
+                                    ) : vol.status === 'DISCONNECTED' ? (
+                                      <span className="text-amber-800 font-bold bg-amber-50 border border-amber-300 px-1.5 py-0.2 rounded text-[10px]">NOT CONNECTED</span>
+                                    ) : (
+                                      <strong className="text-slate-600">{vol.status}</strong>
+                                    )}
+                                  </span>
                                   <span>&bull;</span>
                                   <span className="font-mono text-[10px] text-slate-400 truncate max-w-[200px]" title={vol.volumeGuid}>
                                     GUID: {vol.volumeGuid ? `${vol.volumeGuid.substring(0, 16)}...` : 'N/A'}
@@ -595,6 +1207,26 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
 
                               {/* Right: Actions */}
                               <div className="flex items-center space-x-2 flex-shrink-0">
+                                {vol.status === 'ONLINE' ? (
+                                  <button
+                                    onClick={() => handleDisconnectVolume(vol)}
+                                    className="px-2.5 py-1 border border-amber-300 hover:bg-amber-50 text-amber-800 rounded text-xs font-semibold shadow-2xs transition flex items-center space-x-1"
+                                    title="Disconnect this storage volume from NKB Cloud"
+                                  >
+                                    <PowerOff className="w-3.5 h-3.5 text-amber-600" />
+                                    <span>Disconnect</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleConnectVolume(vol)}
+                                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold shadow-2xs transition flex items-center space-x-1"
+                                    title="Connect and enable this storage volume in NKB Cloud"
+                                  >
+                                    <Link2 className="w-3.5 h-3.5 text-white" />
+                                    <span>Connect to Cloud</span>
+                                  </button>
+                                )}
+
                                 {onNavigateToDriveBrowser && (
                                   <button
                                     onClick={() => onNavigateToDriveBrowser(vol.id)}
@@ -755,6 +1387,26 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
                       <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
                       <span>Verify Hashes</span>
                     </button>
+
+                    {vol.status === 'ONLINE' ? (
+                      <button
+                        onClick={() => handleDisconnectVolume(vol)}
+                        className="px-3 py-1.5 border border-amber-300 hover:bg-amber-50 text-amber-800 rounded text-xs font-semibold shadow-sm transition flex items-center space-x-1.5"
+                        title="Disconnect this storage volume from NKB Cloud"
+                      >
+                        <PowerOff className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Disconnect</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleConnectVolume(vol)}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold shadow-sm transition flex items-center space-x-1.5"
+                        title="Connect and enable this storage volume in NKB Cloud"
+                      >
+                        <Link2 className="w-3.5 h-3.5 text-white" />
+                        <span>Connect to Cloud</span>
+                      </button>
+                    )}
 
                     <button
                       onClick={() => handleOpenEdit(vol)}
@@ -1119,6 +1771,120 @@ export default function StorageManagementView({ volumes, onRefresh, agentConnect
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {/* CONTROLLED REMOVAL IMPACT MODAL */}
+      {removalModalOpen && volumeForRemoval && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-2">
+                <ShieldAlert className="w-5 h-5 text-red-600" />
+                <h3 className="font-bold text-sm text-nkb-navy-900">
+                  Controlled Storage Removal & Pre-Flight Impact
+                </h3>
+              </div>
+              <button
+                onClick={() => setRemovalModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {loadingImpact ? (
+              <div className="py-8 text-center text-xs text-slate-500 flex flex-col items-center justify-center space-y-2">
+                <RefreshCw className="w-5 h-5 animate-spin text-nkb-navy-900" />
+                <span>Auditing active files, pending syncs, and department folders...</span>
+              </div>
+            ) : removalImpact ? (
+              <div className="space-y-4 text-xs">
+                {/* Target Volume Card */}
+                <div className="p-3 bg-slate-50 rounded border border-slate-200">
+                  <div className="font-bold text-nkb-navy-900">{volumeForRemoval.assignedName}</div>
+                  <div className="text-[11px] text-slate-500 font-mono mt-0.5">{volumeForRemoval.mountPath}</div>
+                </div>
+
+                {/* Pre-flight Audit Metrics */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3 bg-white border border-slate-200 rounded">
+                    <div className="text-slate-500 text-[11px]">Active Stored Files</div>
+                    <div className="text-lg font-bold text-nkb-navy-900 mt-1 font-mono">
+                      {removalImpact.activeFilesCount}
+                    </div>
+                    <div className="text-[10px] text-slate-400 font-mono">
+                      {formatBytes(removalImpact.activeBytes)}
+                    </div>
+                  </div>
+                  <div className="p-3 bg-white border border-slate-200 rounded">
+                    <div className="text-slate-500 text-[11px]">In-Flight Uploads</div>
+                    <div className="text-lg font-bold text-nkb-navy-900 mt-1 font-mono">
+                      {removalImpact.pendingUploadsCount}
+                    </div>
+                    <div className="text-[10px] text-slate-400">active sessions</div>
+                  </div>
+                </div>
+
+                {/* Warnings */}
+                {removalImpact.warnings && removalImpact.warnings.length > 0 && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded text-amber-900 space-y-1">
+                    <div className="font-bold flex items-center space-x-1.5 text-amber-800">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                      <span>Impact Warnings ({removalImpact.warnings.length})</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-800 pl-1">
+                      {removalImpact.warnings.map((w, idx) => (
+                        <li key={idx}>{w}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Zero-Destruction Guarantee */}
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded text-blue-900 space-y-1">
+                  <div className="font-bold flex items-center space-x-1.5 text-blue-900">
+                    <ShieldCheck className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                    <span>Zero-Destruction Guarantee</span>
+                  </div>
+                  <p className="text-[11px] text-blue-800">
+                    {removalImpact.safetyNotice || 'Removing this storage location will NEVER delete physical files or format the drive. The underlying data remains completely untouched on the storage device.'}
+                  </p>
+                </div>
+
+                {/* Confirmation Input */}
+                <div className="space-y-2 pt-2 border-t border-slate-100">
+                  <label className="block text-[11px] font-semibold text-slate-700">
+                    To confirm safe removal, type <span className="font-mono text-red-600 font-bold">"{volumeForRemoval.assignedName}"</span> below:
+                  </label>
+                  <input
+                    type="text"
+                    value={confirmRemovalName}
+                    onChange={(e) => setConfirmRemovalName(e.target.value)}
+                    placeholder={volumeForRemoval.assignedName}
+                    className="w-full px-3 py-2 border border-slate-300 rounded text-xs focus:ring-1 focus:ring-red-500 font-mono"
+                  />
+                </div>
+
+                <div className="pt-2 flex justify-end space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setRemovalModalOpen(false)}
+                    className="px-4 py-2 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={confirmRemovalName.trim() !== volumeForRemoval.assignedName.trim() || removingLocation}
+                    onClick={handleExecuteRemoval}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded text-xs font-bold shadow-sm transition"
+                  >
+                    {removingLocation ? 'Retiring Location...' : 'Confirm Safe Removal'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       )}

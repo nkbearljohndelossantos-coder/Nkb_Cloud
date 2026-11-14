@@ -8,10 +8,12 @@ import StorageManagementView from './pages/StorageManagementView';
 import DriveBrowserView from './pages/DriveBrowserView';
 import UsersView from './pages/UsersView';
 import AuditLogsView from './pages/AuditLogsView';
+import DeviceManagementView from './pages/DeviceManagementView';
 import LoginView from './pages/LoginView';
 import FilePreviewModal from './components/FilePreviewModal';
 import ShareModal from './components/ShareModal';
 import FileDetailsDrawer from './components/FileDetailsDrawer';
+import AgentOnboardingModal from './components/AgentOnboardingModal';
 import api from './api/client';
 
 export default function App() {
@@ -23,6 +25,7 @@ export default function App() {
   const [currentFolderId, setCurrentFolderId] = useState(null);
   const [selectedBrowserVolumeId, setSelectedBrowserVolumeId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Data states
   const [storageOverview, setStorageOverview] = useState(null);
@@ -37,6 +40,24 @@ export default function App() {
   const [previewFile, setPreviewFile] = useState(null);
   const [shareItem, setShareItem] = useState(null);
   const [selectedFileDetails, setSelectedFileDetails] = useState(null);
+  const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [deviceStatus, setDeviceStatus] = useState(null);
+
+  // Check employee device agent status & trigger onboarding if uninstalled
+  const checkDeviceStatus = async () => {
+    try {
+      const res = await api.get('/devices/my-device');
+      setDeviceStatus(res.data);
+      if (res.data.state === 'AGENT_NOT_INSTALLED') {
+        const dismissed = localStorage.getItem('nkb_onboarding_dismissed');
+        if (!dismissed) {
+          setShowOnboardingModal(true);
+        }
+      }
+    } catch (err) {
+      console.warn('[APP] Could not fetch device status:', err.message);
+    }
+  };
 
   // Fetch storage overview & volumes
   const fetchStorageData = async () => {
@@ -50,6 +71,7 @@ export default function App() {
       setVolumes(volRes.data.volumes);
       setRecentActivities(actRes.data.logs || []);
       setAgentConnected(ovRes.data.overview.agentsOnline > 0);
+      await checkDeviceStatus();
     } catch (err) {
       console.error('[APP] Error loading storage data:', err);
     }
@@ -66,11 +88,18 @@ export default function App() {
       else if (currentView === 'starred') params.starred = 'true';
       else if (currentView === 'recent') params.recent = 'true';
       else if (currentView === 'shared-drives') params.view = 'shared-drives';
+      else if (currentView === 'shared-with-me') params.view = 'shared-with-me';
       else if (currentView === 'category') params.category = currentCategory;
 
       const res = await api.get('/files', { params });
+      const rawFiles = res.data.files || [];
+      const cleanFiles = rawFiles.filter(f => {
+        if (!f || !f.name) return false;
+        const n = f.name.toLowerCase();
+        return !n.includes('desktop.ini') && !n.includes('thumbs.db') && !n.includes('.ds_store') && !f.name.startsWith('.');
+      });
       setFolders(res.data.folders || []);
-      setFiles(res.data.files || []);
+      setFiles(cleanFiles);
       setBreadcrumbs(res.data.breadcrumbs || []);
     } catch (err) {
       console.error('[APP] Error loading explorer items:', err);
@@ -113,16 +142,19 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans antialiased overflow-hidden select-none">
-      {/* Sidebar */}
+      {/* Responsive Sidebar with Mobile Drawer support */}
       <Sidebar
         currentView={currentView}
         setCurrentView={(view) => {
           setCurrentView(view);
           setCurrentFolderId(null);
+          setMobileMenuOpen(false);
         }}
         currentCategory={currentCategory}
         setCurrentCategory={setCurrentCategory}
         storageOverview={storageOverview}
+        isOpen={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
       />
 
       {/* Main Content Area */}
@@ -134,6 +166,7 @@ export default function App() {
           onRefresh={handleRefresh}
           agentConnected={agentConnected}
           storageOverview={storageOverview}
+          onToggleMobileMenu={() => setMobileMenuOpen(prev => !prev)}
         />
 
         {/* Dynamic Main Workspace View */}
@@ -188,6 +221,8 @@ export default function App() {
 
           {currentView === 'users' && <UsersView />}
 
+          {currentView === 'devices' && <DeviceManagementView />}
+
           {currentView === 'audit' && <AuditLogsView />}
         </main>
       </div>
@@ -213,6 +248,17 @@ export default function App() {
           onClose={() => setSelectedFileDetails(null)}
         />
       )}
+
+      {/* Agent Onboarding Workflow Modal */}
+      <AgentOnboardingModal
+        isOpen={showOnboardingModal}
+        onClose={() => setShowOnboardingModal(false)}
+        deviceStatus={deviceStatus}
+        onEnrollmentComplete={async () => {
+          await checkDeviceStatus();
+          await fetchStorageData();
+        }}
+      />
     </div>
   );
 }

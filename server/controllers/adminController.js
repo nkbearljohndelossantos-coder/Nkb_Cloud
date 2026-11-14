@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import db from '../config/db.js';
+import deviceService from '../services/deviceService.js';
 
 export async function getUsers(req, res) {
   try {
@@ -224,6 +225,110 @@ export async function rotateAgentKey(req, res) {
       newCredentialId: newCredId,
       fingerprint
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function getDepartments(req, res) {
+  try {
+    const deptsRes = await db.query('SELECT * FROM departments ORDER BY name ASC');
+    res.json({ departments: deptsRes.rows || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function getShareableUsers(req, res) {
+  try {
+    const usersRes = await db.query(
+      `SELECT u.id, u.username, u.email, u.full_name, u.department_id, d.name as department_name, d.code as department_code, r.name as role_name
+       FROM users u
+       LEFT JOIN departments d ON u.department_id = d.id
+       LEFT JOIN roles r ON u.role_id = r.id
+       WHERE u.status = 'ACTIVE'
+       ORDER BY d.name ASC, u.full_name ASC`
+    );
+    res.json({ users: usersRes.rows || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function getDevices(req, res) {
+  try {
+    const devices = await deviceService.listAllDevices();
+    res.json(devices);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function approveDevice(req, res) {
+  try {
+    const { agentId } = req.params;
+    const result = await deviceService.approveDevice(agentId, req.user);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}
+
+export async function revokeDevice(req, res) {
+  try {
+    const { agentId } = req.params;
+    const { reason } = req.body;
+    const result = await deviceService.revokeDevice(agentId, req.user, reason);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}
+
+export async function suspendDevice(req, res) {
+  try {
+    const { agentId } = req.params;
+    const { reason } = req.body;
+    const result = await deviceService.suspendDevice(agentId, req.user, reason);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}
+
+export async function reactivateDevice(req, res) {
+  try {
+    const { agentId } = req.params;
+    const result = await deviceService.reactivateDevice(agentId, req.user);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}
+
+export async function requestAgentUpdate(req, res) {
+  try {
+    const { agentId } = req.params;
+    const { targetVersion } = req.body;
+    const result = await deviceService.requestAgentUpdate(agentId, req.user, targetVersion || '2.1.0');
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}
+
+export async function getDeviceAuditHistory(req, res) {
+  try {
+    const { agentId } = req.params;
+    const logsRes = await db.query(
+      `SELECT a.*, u.username, u.full_name
+       FROM audit_logs a
+       LEFT JOIN users u ON a.user_id = u.id
+       WHERE a.entity_id = $1 OR (a.entity_type = 'STORAGE_AGENT' AND a.entity_id = $1)
+       ORDER BY a.created_at DESC`,
+      [agentId]
+    );
+    res.json(logsRes.rows || []);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -55,6 +55,7 @@ async function runSecurityRemediationSuite() {
   const agentSecret = 'remediation_secret_key_2026';
   const agentToken = 'nkb_token_remediated_ed25519';
   const agentId = crypto.randomUUID();
+  let origGate;
 
   try {
     // ---------------------------------------------------------------------------
@@ -194,6 +195,21 @@ async function runSecurityRemediationSuite() {
 
     // Mutual Handshake with Canonical Ed25519 Asymmetric Signature
     const wsUrl = `ws://localhost:${testPort}/ws/agent`;
+
+    // Verify maintenance gate rejection when gate is active
+    let gateCaught = false;
+    const gateClient = new WebSocket(wsUrl, { headers: { 'x-agent-token': agentToken } });
+    await new Promise((resolve) => {
+      gateClient.on('close', () => { gateCaught = true; resolve(); });
+      gateClient.on('error', () => { gateCaught = true; resolve(); });
+      setTimeout(resolve, 800);
+    });
+    assert(gateCaught === true, 'Storage Agent connection rejected during active Staging Maintenance Gate');
+
+    // Temporarily bypass gate in local test memory to validate cryptographic handshake
+    origGate = process.env.STAGING_MAINTENANCE_GATE;
+    process.env.STAGING_MAINTENANCE_GATE = 'false';
+
     const wsClient = new WebSocket(wsUrl, { headers: { 'x-agent-token': agentToken } });
     let ed25519AuthGranted = false;
 
@@ -487,6 +503,9 @@ async function runSecurityRemediationSuite() {
     console.log('================================================================\n');
 
   } finally {
+    if (origGate !== undefined) {
+      process.env.STAGING_MAINTENANCE_GATE = origGate;
+    }
     server.close();
     try {
       if (fs.existsSync(testTempDir)) {

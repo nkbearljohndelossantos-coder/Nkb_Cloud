@@ -254,13 +254,11 @@ export class FileStorageEngine {
         const fullBuffer = Buffer.concat(chunks);
         resolve({
           bytesRead: fullBuffer.length,
-          buffer: fullBuffer,
           startByte: start,
           endByte: end,
           length: fullBuffer.length,
           fileSize,
-          dataBuffer: fullBuffer,
-          dataBase64: fullBuffer.length <= 16 * 1024 * 1024 ? fullBuffer.toString('base64') : null
+          dataBase64: fullBuffer.toString('base64')
         });
       });
       stream.on('error', (err) => reject(err));
@@ -406,12 +404,21 @@ export class FileStorageEngine {
 
     const hiddenSystemItems = new Set([
       '$recycle.bin', 'system volume information', 'pagefile.sys',
-      'hiberfil.sys', 'swapfile.sys', 'dumpstack.log.tmp', 'config.msi', 'found.000'
+      'hiberfil.sys', 'swapfile.sys', 'dumpstack.log.tmp', 'config.msi', 'found.000',
+      'desktop.ini', 'thumbs.db', 'ehthumbs.db', 'ehthumbs_vista.db', '.ds_store',
+      'ntuser.dat', 'ntuser.dat.log', 'ntuser.ini', 'bootmgr', 'bootnxt'
     ]);
 
     for (const entry of rawEntries) {
       const entryNameLower = entry.name.toLowerCase();
-      if (hiddenSystemItems.has(entryNameLower)) {
+      // Skip hidden system files, recycle bin, dot-files, dollar-files, and desktop.ini
+      if (
+        hiddenSystemItems.has(entryNameLower) ||
+        entry.name.startsWith('.') ||
+        entry.name.startsWith('$') ||
+        entryNameLower.includes('desktop.ini') ||
+        entryNameLower.includes('thumbs.db')
+      ) {
         continue;
       }
 
@@ -584,6 +591,26 @@ export class FileStorageEngine {
       totalBytes: stat.size,
       bytesRead: bytesToRead
     };
+  }
+
+  // Delete payload only when explicitly authorized by Super Admin with authorizationToken
+  async deleteFile({ mountPath, relativePath, authorizationToken, commandId }) {
+    this.registerAllowlistedRoot(mountPath);
+    const targetPath = this.resolveSafePath(mountPath, relativePath);
+
+    if (!authorizationToken || typeof authorizationToken !== 'string') {
+      throw new Error('Security Violation: File deletion requires an explicit cryptographic authorizationToken');
+    }
+
+    if (commandId && !authorizationToken.includes(commandId)) {
+      throw new Error('Security Violation: Authorization token does not match the active commandId');
+    }
+
+    if (fs.existsSync(targetPath)) {
+      fs.unlinkSync(targetPath);
+      return { deleted: true, targetPath };
+    }
+    return { deleted: false, reason: 'Already deleted' };
   }
 }
 

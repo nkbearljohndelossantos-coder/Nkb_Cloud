@@ -1,0 +1,4 @@
+﻿NKB MANUFACTURING ENTERPRISE — NETWORK ARCHITECTURE SPECIFICATION
+Version: 2.1.0
+Cluster: Production AlmaLinux 10 + Node.js 26 + PostgreSQL 16
+Security: Ed25519 Mutual Auth, TLS 1.3, DLP Outside-Company Restricted

@@ -1,0 +1,102 @@
+# ==============================================================================
+# NKB Cloud v2.1.0 — Local Docker Simulation Compose Configuration
+# Disposable, isolated test stack (Runs on alternative ports to protect staging)
+# ==============================================================================
+
+name: nkb-cloud-simulation
+
+services:
+  # Isolated PostgreSQL 16 Test Database
+  db:
+    image: postgres:16-alpine
+    container_name: nkb_sim_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nkb_cloud_sim
+      POSTGRES_USER: nkb_sim_user
+      POSTGRES_PASSWORD: nkb_sim_password_2026!
+    volumes:
+      - nkb_sim_pgdata:/var/lib/postgresql/data
+    ports:
+      # Port 5434 avoids collision with staging DB on port 5433
+      - "127.0.0.1:5434:5432"
+    networks:
+      - nkb_sim_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nkb_sim_user -d nkb_cloud_sim"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Express Backend Container (Non-root user)
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: nkb_sim_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      HOST: 0.0.0.0
+      DATABASE_URL: postgres://nkb_sim_user:nkb_sim_password_2026!@db:5432/nkb_cloud_sim
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: nkb_sim_user
+      PGPASSWORD: nkb_sim_password_2026!
+      PGDATABASE: nkb_cloud_sim
+      JWT_SECRET: 4f9b2a7e18c53d9e0b82f6a14c3e7d59b02a1e8c4d3b6f9a7e0c2d4b8a1e3f5c
+      JWT_EXPIRES_IN: 7d
+      STAGING_MAINTENANCE_GATE: "false"
+      STORAGE_ROOT: /app/storage
+      UPLOAD_TEMP_DIR: /app/uploads
+      DOWNLOAD_TEMP_DIR: /app/downloads
+      LOGS_DIR: /app/logs
+    volumes:
+      - nkb_sim_storage:/app/storage
+      - nkb_sim_uploads:/app/uploads
+    networks:
+      - nkb_sim_network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # React Frontend Container (Nginx Static Server)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: nkb_sim_frontend
+    restart: unless-stopped
+    networks:
+      - nkb_sim_network
+
+  # Reverse Proxy (Ingress simulation on port 8080)
+  proxy:
+    image: nginx:1.26.3-alpine@sha256:1eadbb07820339e8bbfed18c771691970baee292ec4ab2558f1453d26153e22d
+    container_name: nkb_sim_proxy
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    volumes:
+      - ./nginx/simulation.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      # Port 8080 avoids collision with port 80/5000/5173
+      - "127.0.0.1:8080:8080"
+    networks:
+      - nkb_sim_network
+
+networks:
+  nkb_sim_network:
+    driver: bridge
+
+volumes:
+  nkb_sim_pgdata:
+  nkb_sim_storage:
+  nkb_sim_uploads:

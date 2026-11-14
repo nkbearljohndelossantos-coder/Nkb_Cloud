@@ -18,19 +18,36 @@ import {
   LayoutDashboard,
   Cloud,
   FolderOpen,
-  Compass
+  Compass,
+  Laptop,
+  X
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { formatBytes } from '../utils/formatters';
 
-export default function Sidebar({ currentView, setCurrentView, currentCategory, setCurrentCategory, storageOverview }) {
+export default function Sidebar({
+  currentView,
+  setCurrentView,
+  currentCategory,
+  setCurrentCategory,
+  storageOverview,
+  isOpen = false,
+  onClose
+}) {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === 'SUPER ADMIN';
   const isAdmin = user?.role === 'ADMIN' || isSuperAdmin;
 
-  const usedBytes = user?.usedStorageBytes || 0;
-  const quotaBytes = user?.storageQuotaBytes || (100 * 1024 * 1024 * 1024);
-  const usedPercent = Math.min(100, Math.round((usedBytes / quotaBytes) * 100));
+  const handleNav = (id) => {
+    setCurrentView(id);
+    if (onClose) onClose();
+  };
+
+  const handleCategoryNav = (catId) => {
+    setCurrentView('category');
+    setCurrentCategory(catId);
+    if (onClose) onClose();
+  };
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -51,23 +68,46 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
   ];
 
   return (
-    <aside className="w-64 bg-nkb-navy-900 text-slate-300 flex flex-col h-screen select-none border-r border-nkb-navy-800 flex-shrink-0">
-      {/* Brand Header */}
-      <div className="p-4 border-b border-nkb-navy-800 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="w-9 h-9 rounded bg-nkb-gold-500 flex items-center justify-center text-nkb-navy-950 font-bold shadow-sm">
-            <Cloud className="w-5 h-5 text-nkb-navy-950" />
-          </div>
-          <div>
-            <div className="font-bold text-white text-base tracking-wide flex items-center">
-              NKB <span className="text-nkb-gold-400 ml-1">CLOUD</span>
+    <>
+      {/* Mobile Drawer Backdrop */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 md:hidden transition-opacity"
+          onClick={onClose}
+        />
+      )}
+
+      <aside className={`
+        fixed inset-y-0 left-0 z-50 w-64 bg-nkb-navy-900 text-slate-300 flex flex-col h-screen select-none border-r border-nkb-navy-800 flex-shrink-0 transition-transform duration-200 ease-in-out
+        ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 md:static
+      `}>
+        {/* Brand Header */}
+        <div className="p-4 border-b border-nkb-navy-800 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <img
+              src="/logo.png"
+              alt="NKB Cloud Logo"
+              className="h-11 w-auto object-contain drop-shadow-md hover:scale-105 transition-transform"
+            />
+            <div>
+              <div className="font-extrabold text-white text-base tracking-wide flex items-center leading-tight">
+                NKB <span className="text-nkb-gold-400 ml-1">CLOUD</span>
+              </div>
+              <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider mt-0.5">
+                NKB Manufacturing
+              </div>
             </div>
-            <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">
-              NKB Manufacturing
-            </div>
           </div>
+
+          {/* Mobile Close Button */}
+          <button
+            onClick={onClose}
+            className="md:hidden p-1.5 text-slate-400 hover:text-white hover:bg-nkb-navy-800 rounded transition"
+            title="Close menu"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
-      </div>
 
       {/* Navigation Links */}
       <div className="flex-1 overflow-y-auto px-3 py-4 space-y-6">
@@ -82,10 +122,7 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
             return (
               <button
                 key={item.id}
-                onClick={() => {
-                  setCurrentView(item.id);
-                  setCurrentCategory(null);
-                }}
+                onClick={() => handleNav(item.id)}
                 className={`w-full flex items-center space-x-3 px-3 py-2 rounded text-xs font-medium transition-colors text-left ${
                   isActive
                     ? 'bg-nkb-navy-800 text-nkb-gold-400 font-semibold border-l-2 border-nkb-gold-500'
@@ -110,10 +147,7 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
             return (
               <button
                 key={cat.id}
-                onClick={() => {
-                  setCurrentView('category');
-                  setCurrentCategory(cat.id);
-                }}
+                onClick={() => handleCategoryNav(cat.id)}
                 className={`w-full flex items-center space-x-3 px-3 py-2 rounded text-xs font-medium transition-colors text-left ${
                   isActive
                     ? 'bg-nkb-navy-800 text-nkb-gold-400 font-semibold border-l-2 border-nkb-gold-500'
@@ -136,10 +170,7 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
             </div>
 
             <button
-              onClick={() => {
-                setCurrentView('drive-browser');
-                setCurrentCategory(null);
-              }}
+              onClick={() => handleNav('drive-browser')}
               className={`w-full flex items-center space-x-3 px-3 py-2 rounded text-xs font-medium transition-colors text-left ${
                 currentView === 'drive-browser'
                   ? 'bg-nkb-navy-800 text-nkb-gold-400 font-semibold border-l-2 border-nkb-gold-500'
@@ -156,10 +187,7 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
             </button>
 
             <button
-              onClick={() => {
-                setCurrentView('storage');
-                setCurrentCategory(null);
-              }}
+              onClick={() => handleNav('storage')}
               className={`w-full flex items-center space-x-3 px-3 py-2 rounded text-xs font-medium transition-colors text-left ${
                 currentView === 'storage'
                   ? 'bg-nkb-navy-800 text-nkb-gold-400 font-semibold border-l-2 border-nkb-gold-500'
@@ -178,10 +206,24 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
             </button>
 
             <button
-              onClick={() => {
-                setCurrentView('users');
-                setCurrentCategory(null);
-              }}
+              onClick={() => handleNav('devices')}
+              className={`w-full flex items-center space-x-3 px-3 py-2 rounded text-xs font-medium transition-colors text-left ${
+                currentView === 'devices'
+                  ? 'bg-nkb-navy-800 text-nkb-gold-400 font-semibold border-l-2 border-nkb-gold-500'
+                  : 'text-slate-300 hover:bg-nkb-navy-800/60 hover:text-white'
+              }`}
+            >
+              <Server className={`w-4 h-4 ${currentView === 'devices' ? 'text-nkb-gold-400' : 'text-slate-400'}`} />
+              <div className="flex-1 flex items-center justify-between">
+                <span>Device Management</span>
+                <span className="text-[9px] bg-sky-500/20 text-sky-300 font-mono px-1.5 py-0.2 rounded">
+                  AGENTS
+                </span>
+              </div>
+            </button>
+
+            <button
+              onClick={() => handleNav('users')}
               className={`w-full flex items-center space-x-3 px-3 py-2 rounded text-xs font-medium transition-colors text-left ${
                 currentView === 'users'
                   ? 'bg-nkb-navy-800 text-nkb-gold-400 font-semibold border-l-2 border-nkb-gold-500'
@@ -194,10 +236,7 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
 
             {isSuperAdmin && (
               <button
-                onClick={() => {
-                  setCurrentView('audit');
-                  setCurrentCategory(null);
-                }}
+                onClick={() => handleNav('audit')}
                 className={`w-full flex items-center space-x-3 px-3 py-2 rounded text-xs font-medium transition-colors text-left ${
                   currentView === 'audit'
                     ? 'bg-nkb-navy-800 text-nkb-gold-400 font-semibold border-l-2 border-nkb-gold-500'
@@ -211,24 +250,7 @@ export default function Sidebar({ currentView, setCurrentView, currentCategory, 
           </div>
         )}
       </div>
-
-      {/* Storage Quota Card in Footer */}
-      <div className="p-4 border-t border-nkb-navy-800 bg-nkb-navy-950/60">
-        <div className="flex items-center justify-between text-xs mb-1.5">
-          <span className="text-slate-300 font-medium">Personal Storage</span>
-          <span className="text-nkb-gold-400 font-semibold">{usedPercent}%</span>
-        </div>
-        <div className="w-full h-1.5 bg-nkb-navy-800 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-nkb-gold-500 rounded-full"
-            style={{ width: `${usedPercent}%` }}
-          />
-        </div>
-        <div className="mt-2 text-[11px] text-slate-400 flex justify-between">
-          <span>{formatBytes(usedBytes)} used</span>
-          <span>{formatBytes(quotaBytes)} quota</span>
-        </div>
-      </div>
     </aside>
+    </>
   );
 }

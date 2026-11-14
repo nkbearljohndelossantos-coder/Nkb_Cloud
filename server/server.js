@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import http from 'http';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import express from 'express';
 import cors from 'cors';
@@ -9,6 +10,8 @@ import morgan from 'morgan';
 import db from './config/db.js';
 import agentHub from './services/agentHub.js';
 import apiRouter from './routes/api.js';
+import driveRouter from './routes/drive.js';
+import { stagingMaintenanceGate } from './middleware/maintenanceGate.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +20,7 @@ const app = express();
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
+const HOST = process.env.HOST || '127.0.0.1';
 
 // Security & Parsing Middleware
 app.use(cors({
@@ -32,8 +36,14 @@ app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use(morgan('dev'));
 
+// Universal Staging Maintenance Gate
+app.use(stagingMaintenanceGate);
+
 // API Routes
 app.use('/api', apiRouter);
+
+// Additive NKB Drive Desktop Client Routes (/api/v1/drive)
+app.use('/api/v1/drive', driveRouter);
 
 // Root healthcheck
 app.get('/health', (req, res) => {
@@ -45,6 +55,15 @@ app.get('/health', (req, res) => {
     agentConnected: agentHub.hasConnectedAgent(),
     timestamp: new Date().toISOString()
   });
+});
+
+// Favicon handler
+app.get('/favicon.ico', (req, res) => {
+  const favPath = path.join(clientDist, 'favicon.ico');
+  if (fs.existsSync(favPath)) {
+    return res.sendFile(favPath);
+  }
+  res.status(204).end();
 });
 
 // Serve frontend static build if built
@@ -86,12 +105,21 @@ app.use((err, req, res, next) => {
 async function start() {
   try {
     await db.initialize();
+
+    // Universal Staging Maintenance Gate for WebSocket Upgrade Handshakes
+    server.on('upgrade', (req, socket, head) => {
+      if (process.env.STAGING_MAINTENANCE_GATE === 'true') {
+        socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n{"error":"STAGING_MAINTENANCE_GATE_ACTIVE"}\r\n');
+        socket.destroy();
+      }
+    });
+
     agentHub.initialize(server);
 
-    server.listen(PORT, () => {
+    server.listen(PORT, HOST, () => {
       console.log(`====================================================`);
       console.log(`  NKB CLOUD ENTERPRISE STORAGE PLATFORM`);
-      console.log(`  API Server listening on: http://localhost:${PORT}`);
+      console.log(`  API Server listening on: http://${HOST}:${PORT}`);
       console.log(`  Storage Agent Hub (WSS): ws://localhost:${PORT}/ws/agent`);
       console.log(`  Database engine: ${db.mode.toUpperCase()}`);
       console.log(`====================================================`);

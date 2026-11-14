@@ -30,15 +30,21 @@ import {
   FileCode,
   FileSpreadsheet,
   Lock,
-  X
+  X,
+  Share2
 } from 'lucide-react';
 import api from '../api/client';
 import { formatBytes, formatDate } from '../utils/formatters';
 import DriveFilePreviewModal from '../components/DriveFilePreviewModal';
+import ShareModal from '../components/ShareModal';
 
 export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initialVolumeId = null }) {
   // Volume selection
   const [selectedVolumeId, setSelectedVolumeId] = useState(initialVolumeId);
+
+  // Share to My Drive state
+  const [shareModalFolder, setShareModalFolder] = useState(null);
+  const [linkingFolder, setLinkingFolder] = useState(false);
 
   // Directory browsing state
   const [currentPath, setCurrentPath] = useState('');
@@ -77,15 +83,22 @@ export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initi
     }
   }, [initialVolumeId]);
 
+  // Visible volumes: exclude hidden, system, recovery, or reserved partitions
+  const visibleVolumes = (volumes || []).filter(vol => {
+    const isHidden = !vol.currentDriveLetter && (!vol.mountPath || vol.mountPath.startsWith('Partition-') || vol.mountPath.startsWith('\\\\?\\Volume'));
+    const isSystemFs = ['SYSTEM', 'RESERVED'].includes(vol.filesystem?.toUpperCase());
+    return !isHidden && !isSystemFs;
+  });
+
   // Auto-select first online volume with a drive letter
   useEffect(() => {
-    if (!selectedVolumeId && volumes && volumes.length > 0) {
-      const preferred = volumes.find(v => v.status === 'ONLINE' && v.currentDriveLetter) || volumes[0];
+    if (!selectedVolumeId && visibleVolumes && visibleVolumes.length > 0) {
+      const preferred = visibleVolumes.find(v => v.status === 'ONLINE' && v.currentDriveLetter) || visibleVolumes[0];
       if (preferred) {
         setSelectedVolumeId(preferred.id);
       }
     }
-  }, [volumes, selectedVolumeId]);
+  }, [visibleVolumes, selectedVolumeId]);
 
   // Fetch directory contents from Storage Agent
   const fetchDirectory = useCallback(async (volumeId, pathStr = '', pageNum = 1, searchStr = '', sortField = sortBy, sortDir = sortOrder) => {
@@ -108,7 +121,12 @@ export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initi
 
       const data = res.data;
       if (data.success) {
-        setItems(data.items || []);
+        const cleanItems = (data.items || []).filter(item => {
+          if (!item || !item.name) return false;
+          const n = item.name.toLowerCase();
+          return !n.includes('desktop.ini') && !n.includes('thumbs.db') && !n.includes('.ds_store') && !item.name.startsWith('.') && !item.name.startsWith('$');
+        });
+        setItems(cleanItems);
         setCurrentPath(data.currentPath || '');
         setBreadcrumbs(data.breadcrumbs || [{ name: 'Root', path: '' }]);
         setTotalCount(data.totalCount || 0);
@@ -225,6 +243,23 @@ export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initi
     return <File className="w-5 h-5 text-slate-500" />;
   };
 
+  const handleShareFolderToMyDrive = async (item) => {
+    if (!selectedVolumeId || !item.isDirectory) return;
+    setLinkingFolder(true);
+    try {
+      const res = await api.post(`/storage/volumes/${selectedVolumeId}/link-folder`, {
+        folderName: item.name,
+        relativePath: item.relativePath
+      });
+      const folder = res.data.folder;
+      setShareModalFolder(folder);
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    } finally {
+      setLinkingFolder(false);
+    }
+  };
+
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden select-none bg-slate-50">
       {/* LEFT SIDEBAR: Registered Physical Drives & Volumes */}
@@ -246,7 +281,7 @@ export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initi
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
-          {volumes.map((vol) => {
+          {visibleVolumes.map((vol) => {
             const isSelected = vol.id === selectedVolumeId;
             const isOnline = vol.status === 'ONLINE';
             const vTotal = BigInt(vol.totalBytes || '0');
@@ -484,7 +519,7 @@ export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initi
                       >
                         Date Modified {sortBy === 'modifiedAt' && (sortOrder === 'asc' ? '↑' : '↓')}
                       </th>
-                      <th className="py-2.5 px-4 w-28 text-right">Actions</th>
+                      <th className="py-2.5 px-4 w-44 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -507,12 +542,29 @@ export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initi
                           }`}
                         >
                           <td className="py-2.5 px-4 flex items-center space-x-3">
-                            {renderItemIcon(item)}
-                            <span className={`font-medium truncate max-w-md ${
-                              item.isDirectory ? 'text-nkb-navy-900 font-semibold' : 'text-slate-800'
-                            }`}>
-                              {item.name}
-                            </span>
+                            {item.isDirectory ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigateTo(item.relativePath);
+                                }}
+                                className="flex items-center space-x-3 text-left group hover:text-nkb-gold-600 transition"
+                                title={`Open folder ${item.name}`}
+                              >
+                                {renderItemIcon(item)}
+                                <span className="font-semibold text-nkb-navy-900 group-hover:text-nkb-gold-600 underline-offset-2 hover:underline truncate max-w-md">
+                                  {item.name}
+                                </span>
+                              </button>
+                            ) : (
+                              <div className="flex items-center space-x-3">
+                                {renderItemIcon(item)}
+                                <span className="font-medium text-slate-800 truncate max-w-md">
+                                  {item.name}
+                                </span>
+                              </div>
+                            )}
                           </td>
                           <td className="py-2.5 px-4 text-slate-500">
                             {item.fileType}
@@ -524,7 +576,32 @@ export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initi
                             {item.modifiedAt ? formatDate(item.modifiedAt) : '—'}
                           </td>
                           <td className="py-2.5 px-4 text-right">
-                            {!item.isDirectory && (
+                            {item.isDirectory ? (
+                              <div className="inline-flex items-center space-x-2">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigateTo(item.relativePath);
+                                  }}
+                                  className="inline-flex items-center space-x-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded text-[11px] shadow-sm transition"
+                                  title="Open subfolder"
+                                >
+                                  <span>Open</span>
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleShareFolderToMyDrive(item);
+                                  }}
+                                  disabled={linkingFolder}
+                                  className="inline-flex items-center space-x-1.5 px-2.5 py-1 bg-nkb-gold-50 hover:bg-nkb-gold-100 text-nkb-navy-950 border border-nkb-gold-400 font-bold rounded text-[11px] shadow-sm transition disabled:opacity-50"
+                                  title="Share folder to My Drive & Departments"
+                                >
+                                  <Share2 className="w-3 h-3 text-nkb-gold-600" />
+                                  <span>Share to My Drive</span>
+                                </button>
+                              </div>
+                            ) : (
                               <div className="flex items-center justify-end space-x-1">
                                 <button
                                   onClick={(e) => {
@@ -577,16 +654,64 @@ export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initi
                           : 'bg-white hover:bg-slate-50 border-slate-200'
                       }`}
                     >
-                      <div className="w-12 h-12 rounded bg-slate-100/60 flex items-center justify-center">
+                      <div
+                        onClick={(e) => {
+                          if (item.isDirectory) {
+                            e.stopPropagation();
+                            navigateTo(item.relativePath);
+                          }
+                        }}
+                        className={`w-12 h-12 rounded bg-slate-100/60 flex items-center justify-center ${
+                          item.isDirectory ? 'hover:bg-nkb-gold-100 hover:scale-105 transition-all' : ''
+                        }`}
+                        title={item.isDirectory ? `Open ${item.name}` : undefined}
+                      >
                         {renderItemIcon(item)}
                       </div>
                       <div className="w-full">
-                        <div className="text-xs font-semibold text-slate-800 truncate" title={item.name}>
+                        <div
+                          onClick={(e) => {
+                            if (item.isDirectory) {
+                              e.stopPropagation();
+                              navigateTo(item.relativePath);
+                            }
+                          }}
+                          className={`text-xs font-semibold truncate ${
+                            item.isDirectory
+                              ? 'text-nkb-navy-900 hover:text-nkb-gold-600 hover:underline cursor-pointer'
+                              : 'text-slate-800'
+                          }`}
+                          title={item.name}
+                        >
                           {item.name}
                         </div>
                         <div className="text-[10px] text-slate-400 font-mono mt-0.5">
                           {item.isDirectory ? 'Folder' : formatBytes(item.size)}
                         </div>
+                        {item.isDirectory && (
+                          <div className="mt-2 space-y-1 w-full">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigateTo(item.relativePath);
+                              }}
+                              className="w-full py-1 px-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded text-[10px] flex items-center justify-center transition"
+                            >
+                              <span>Open Folder</span>
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleShareFolderToMyDrive(item);
+                              }}
+                              disabled={linkingFolder}
+                              className="w-full py-1 px-2 bg-nkb-gold-50 hover:bg-nkb-gold-100 text-nkb-navy-950 border border-nkb-gold-400 font-bold rounded text-[10px] flex items-center justify-center space-x-1 transition disabled:opacity-50"
+                            >
+                              <Share2 className="w-3 h-3 text-nkb-gold-600" />
+                              <span>Share to My Drive</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -745,6 +870,17 @@ export default function DriveBrowserView({ volumes = [], onRefreshVolumes, initi
           volumeId={selectedVolumeId}
           file={previewFile}
           onClose={() => setPreviewFile(null)}
+        />
+      )}
+
+      {/* Share to My Drive & Departments Modal */}
+      {shareModalFolder && (
+        <ShareModal
+          folder={shareModalFolder}
+          onClose={() => setShareModalFolder(null)}
+          onShareUpdated={() => {
+            alert(`Folder "${shareModalFolder.name}" has been shared and is now live in My Drive!`);
+          }}
         />
       )}
     </div>

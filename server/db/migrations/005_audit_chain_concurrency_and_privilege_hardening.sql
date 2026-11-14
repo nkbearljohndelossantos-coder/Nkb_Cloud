@@ -70,9 +70,14 @@ BEGIN
     END IF;
 END $$;
 
--- Table ownership strictly assigned to postgres superuser / dba role
-ALTER TABLE audit_logs OWNER TO postgres;
-ALTER TABLE dlp_test_evidence OWNER TO postgres;
+-- Table ownership strictly assigned to postgres superuser / dba role if role exists
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
+        ALTER TABLE audit_logs OWNER TO postgres;
+        ALTER TABLE dlp_test_evidence OWNER TO postgres;
+    END IF;
+END $$;
 
 -- Sequence permissions for identity columns
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO nkb_app;

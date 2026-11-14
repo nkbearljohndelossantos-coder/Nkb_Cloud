@@ -1,0 +1,38 @@
+# Version Control
+.git
+.gitignore
+
+# Dependencies
+node_modules
+*/node_modules
+
+# Logs & Debug
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.system_generated
+
+# Development / Scratch
+scratch
+*.ps1
+*.mjs
+.env*
+!.env.production.example
+
+# Backups & Dumps
+*.dump
+*.zip
+*.tar.gz
+*.bak
+Backups
+Restore_*
+
+# Client Dist (rebuilt inside Docker container)
+client/dist
+dist
+
+# OS files
+.DS_Store
+Thumbs.db

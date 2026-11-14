@@ -4,6 +4,14 @@ client/node_modules/
 server/node_modules/
 storage-agent/node_modules/
 .env
+.env.*
+!.env.example
+!*/.env.example
+!.env.production.example
+*.dump
+*.zip
+*.tar.gz
+backups/
 *.log
 local_storage/
 test_storage/

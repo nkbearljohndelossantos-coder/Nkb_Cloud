@@ -1,0 +1,27 @@
+[Unit]
+Description=NKB Cloud Enterprise Linux Storage Agent Daemon
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/nkb-cloud/storage-agent
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=10
+LimitNOFILE=65536
+
+# Security Hardening
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_DAC_READ_SEARCH
+
+# Environment
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

@@ -122,6 +122,12 @@ try {
             $hasLetter = ($driveLetterChar -and $driveLetterChar -ne "`0" -and $driveLetterChar -ne '0')
             $driveLetter = if ($hasLetter) { "$($driveLetterChar):" } else { $null }
 
+            # Strictly skip hidden, system, reserved, recovery, or non-data partitions
+            $isHidden = ($part.IsHidden -eq $true -or $part.IsSystem -eq $true -or $part.Type -in @('System', 'Reserved', 'Recovery', 'Unknown'))
+            if ($isHidden -or (-not $hasLetter)) {
+                continue
+            }
+
             # Associate volume
             $vol = $null
             if ($hasLetter) {

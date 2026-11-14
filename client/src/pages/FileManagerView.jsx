@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Folder,
   Plus,
@@ -23,10 +23,12 @@ import {
   X,
   FileCheck,
   Pause,
-  Play
+  Play,
+  Shield
 } from 'lucide-react';
 import api from '../api/client';
 import { formatBytes, formatDate, getFileIcon } from '../utils/formatters';
+import { useAuth } from '../context/AuthContext';
 
 export default function FileManagerView({
   currentView,
@@ -52,6 +54,30 @@ export default function FileManagerView({
   const [isDragOver, setIsDragOver] = useState(false);
 
   const fileInputRef = useRef(null);
+  const { user } = useAuth();
+
+  // Automatic outside company restriction: Block copying clipboard events, but keep paste allowed!
+  useEffect(() => {
+    if (!user?.isOutsideCompany) return;
+
+    const handleCopy = (e) => {
+      e.preventDefault();
+      alert('⚠️ RESTRICTED: Copying content is disabled outside company network (Anti-Data Exfiltration Policy).\n\nUploading, writing, and pasting remain fully allowed.');
+    };
+
+    const handleCut = (e) => {
+      e.preventDefault();
+      alert('⚠️ RESTRICTED: Cutting content is disabled outside company network.');
+    };
+
+    document.addEventListener('copy', handleCopy);
+    document.addEventListener('cut', handleCut);
+
+    return () => {
+      document.removeEventListener('copy', handleCopy);
+      document.removeEventListener('cut', handleCut);
+    };
+  }, [user?.isOutsideCompany]);
 
   const getViewTitle = () => {
     if (currentView === 'trash') return 'Trash / Recycle Bin';
@@ -233,6 +259,21 @@ export default function FileManagerView({
       onDrop={handleDrop}
       className="p-8 max-w-7xl mx-auto space-y-6 select-none relative min-h-[calc(100vh-4rem)] flex flex-col"
     >
+      {/* Outside Company DLP Restriction Banner */}
+      {user?.isOutsideCompany && (
+        <div className="bg-amber-50 border border-amber-300 rounded p-3 text-amber-900 text-xs flex items-center justify-between shadow-sm">
+          <div className="flex items-center space-x-2">
+            <Shield className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <div>
+              <span className="font-bold">Outside Company Network Detected ({user.clientIp || 'External IP'}):</span>{' '}
+              <span>Restricted for Copying (Anti-Data Exfiltration Policy Active). Writing, Uploading, and Pasting remain fully allowed.</span>
+            </div>
+          </div>
+          <span className="px-2 py-0.5 rounded bg-amber-200 text-amber-900 text-[10px] font-bold uppercase tracking-wider">
+            DLP Enforced
+          </span>
+        </div>
+      )}
       <input
         ref={fileInputRef}
         type="file"
@@ -352,40 +393,81 @@ export default function FileManagerView({
               Directories ({folders.length})
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              {folders.map((folder) => (
-                <div
-                  key={folder.id}
-                  onDoubleClick={() => setCurrentFolderId(folder.id)}
-                  className="p-3 bg-white border border-slate-200 hover:border-nkb-gold-500 rounded cursor-pointer transition group flex items-center justify-between"
-                >
-                  <div className="flex items-center space-x-2.5 truncate">
-                    <Folder className="w-5 h-5 text-nkb-gold-500 flex-shrink-0" />
-                    <span className="text-xs font-semibold text-slate-800 truncate">
-                      {folder.name}
-                    </span>
-                  </div>
+              {folders.map((folder) => {
+                const hasDeptShares = folder.departmentShares && folder.departmentShares.length > 0;
+                const isSharedWithMe = folder.isSharedWithMyDepartment;
 
-                  <div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1">
-                    {currentView === 'trash' ? (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleRestore(folder, 'folder'); }}
-                        title="Restore folder"
-                        className="p-1 hover:bg-slate-100 rounded text-slate-600"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                      </button>
-                    ) : (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleTrash(folder, 'folder'); }}
-                        title="Move to trash"
-                        className="p-1 hover:bg-slate-100 rounded text-slate-600"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+                return (
+                  <div
+                    key={folder.id}
+                    onDoubleClick={() => setCurrentFolderId(folder.id)}
+                    className="p-3 bg-white border border-slate-200 hover:border-nkb-gold-500 rounded cursor-pointer transition group flex flex-col justify-between space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2 truncate">
+                        <Folder className={`w-5 h-5 flex-shrink-0 ${isSharedWithMe ? 'text-emerald-500' : 'text-nkb-gold-500'}`} />
+                        <span className="text-xs font-semibold text-slate-800 truncate" title={folder.name}>
+                          {folder.name}
+                        </span>
+                      </div>
+
+                      <div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1 flex-shrink-0">
+                        {currentView === 'trash' ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleRestore(folder, 'folder'); }}
+                            title="Restore folder"
+                            className="p-1 hover:bg-slate-100 rounded text-slate-600"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                          </button>
+                        ) : (
+                          <>
+                            {onOpenShare && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onOpenShare(folder); }}
+                                title="Share with Department"
+                                className="p-1 hover:bg-slate-100 rounded text-slate-500 hover:text-nkb-gold-600"
+                              >
+                                <Share2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleTrash(folder, 'folder'); }}
+                              title="Move to trash"
+                              className="p-1 hover:bg-slate-100 rounded text-slate-600 hover:text-red-600"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Share / Permission Badges */}
+                    <div className="flex flex-wrap items-center gap-1">
+                      {folder.myPermission && (
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                          folder.myPermission === 'READ_WRITE' || folder.canWrite
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                            : 'bg-blue-50 text-blue-800 border-blue-300'
+                        }`}>
+                          {folder.myPermission === 'READ_WRITE' || folder.canWrite ? 'Read / Write' : 'Read Only'}
+                        </span>
+                      )}
+                      {hasDeptShares && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 truncate">
+                          Dept: {folder.departmentShares.map(s => s.dept_code || s.dept_name).join(', ')}
+                        </span>
+                      )}
+                      {folder.userShares && folder.userShares.length > 0 && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200 truncate">
+                          {folder.userShares.length} Account(s)
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
