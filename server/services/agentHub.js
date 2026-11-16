@@ -136,7 +136,21 @@ class StorageAgentHub {
           serverPublicKey: this.crypto.serverPublicKey
         }));
 
+        ws.isAlive = true;
+
+        ws.on('pong', () => {
+          ws.isAlive = true;
+          const s = this.agents.get(agent.id);
+          if (s) s.isAlive = true;
+        });
+
+        ws.on('ping', () => {
+          ws.isAlive = true;
+          try { ws.pong(); } catch (_) {}
+        });
+
         ws.on('message', async (data) => {
+          ws.isAlive = true;
           try {
             const message = JSON.parse(data.toString());
             await this.handleAgentMessage(agent.id, message, ws);
@@ -162,6 +176,23 @@ class StorageAgentHub {
         ws.close(4000, 'Handshake failure');
       }
     });
+
+    // Active WebSocket protocol-level Ping/Pong keepalive every 15s to keep connections alive through NAT/firewalls
+    this.keepaliveInterval = setInterval(() => {
+      for (const [agentId, session] of this.agents.entries()) {
+        if (!session.ws || session.ws.readyState !== 1) { // 1 = OPEN
+          continue;
+        }
+        if (session.isAlive === false) {
+          console.warn(`[AgentHub] Ping timeout for agent ${agentId}. Terminating dead connection.`);
+          try { session.ws.terminate(); } catch (_) {}
+          this.agents.delete(agentId);
+          continue;
+        }
+        session.isAlive = false;
+        try { session.ws.ping(); } catch (_) {}
+      }
+    }, 15000);
 
     setInterval(() => this.checkStaleAgents(), 30000);
     console.log('[AgentHub] Secure Outbound Agent Hub mounted on /ws/agent.');
@@ -714,16 +745,22 @@ class StorageAgentHub {
 
   async checkStaleAgents() {
     try {
-      const timeoutThreshold = new Date(Date.now() - 45000);
+      const timeoutThreshold = new Date(Date.now() - 90000); // Generous 90s window
       const staleAgents = await db.query(
         `SELECT id FROM storage_agents WHERE status = 'ONLINE' AND last_heartbeat < $1`,
         [timeoutThreshold]
       );
 
       for (const row of staleAgents.rows || []) {
+        const session = this.agents.get(row.id);
+        // Resilient: If the agent is actually still connected and healthy via WebSocket, keep it ONLINE!
+        if (session && session.ws && session.ws.readyState === 1) {
+          await db.query("UPDATE storage_agents SET last_heartbeat = CURRENT_TIMESTAMP WHERE id = $1", [row.id]);
+          continue;
+        }
+
         console.warn(`[AgentHub] Heartbeat timeout for agent ${row.id}. Marking OFFLINE.`);
         await this.handleAgentDisconnect(row.id);
-        const session = this.agents.get(row.id);
         if (session) {
           try { session.ws.close(4008, 'Heartbeat timeout'); } catch (e) {}
           this.agents.delete(row.id);

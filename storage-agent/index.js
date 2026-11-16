@@ -36,6 +36,15 @@ console.log('====================================================');
 const agent = new AgentClient(config);
 agent.start();
 
+// Global crash prevention guards
+process.on('uncaughtException', (err) => {
+  console.error('[StorageAgent] UNCAUGHT EXCEPTION PREVENTED:', err?.message || err, err?.stack);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[StorageAgent] UNHANDLED REJECTION PREVENTED:', reason);
+});
+
 // Handle graceful shutdown
 process.on('SIGINT', () => {
   console.log('\n[StorageAgent] Shutting down agent gracefully...');

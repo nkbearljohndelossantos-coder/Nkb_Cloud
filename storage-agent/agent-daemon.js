@@ -20,13 +20,29 @@ function log(msg) {
   console.log(msg);
 }
 
+// Global crash prevention for the daemon process
+process.on('uncaughtException', (err) => {
+  log(`[Daemon] UNCAUGHT EXCEPTION PREVENTED: ${err.message}`);
+});
+
+process.on('unhandledRejection', (reason) => {
+  log(`[Daemon] UNHANDLED REJECTION PREVENTED: ${reason}`);
+});
+
 log('[Daemon] NKB Storage Agent Watchdog starting up...');
 
 let child = null;
 let isShuttingDown = false;
+let failedHealthChecks = 0;
 
 function startChild() {
   if (isShuttingDown) return;
+  if (child && child.pid) {
+    try {
+      process.kill(child.pid, 0);
+      return; // Already running
+    } catch (_) {}
+  }
 
   log('[Daemon] Spawning storage agent process...');
   child = spawn(process.execPath, [path.join(__dirname, 'index.js')], {
@@ -46,9 +62,10 @@ function startChild() {
   child.on('exit', (code, signal) => {
     log(`[Daemon] Storage agent exited with code ${code}, signal ${signal}.`);
     child = null;
+    failedHealthChecks = 0;
     if (!isShuttingDown) {
-      log('[Daemon] Auto-restarting storage agent in 3 seconds...');
-      setTimeout(startChild, 3000);
+      log('[Daemon] Auto-restarting storage agent in 2 seconds...');
+      setTimeout(startChild, 2000);
     }
   });
 
@@ -59,16 +76,60 @@ function startChild() {
 
 startChild();
 
+// Active Watchdog Loop (Runs forever, keeping daemon alive and verifying child process)
+setInterval(async () => {
+  if (isShuttingDown) return;
+
+  if (!child || !child.pid) {
+    log('[Daemon Watchdog] Child process not present. Respawning...');
+    startChild();
+    return;
+  }
+
+  try {
+    // Check if process still exists in Windows OS
+    process.kill(child.pid, 0);
+  } catch (_) {
+    log('[Daemon Watchdog] Child PID is dead. Respawning...');
+    child = null;
+    startChild();
+    return;
+  }
+
+  // Probe local agent HTTP endpoint to detect frozen event loops
+  try {
+    const res = await fetch('http://127.0.0.1:51248/status', { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      failedHealthChecks = 0;
+    } else {
+      failedHealthChecks++;
+    }
+  } catch (probeErr) {
+    failedHealthChecks++;
+  }
+
+  // If local agent is unresponsive for 6 consecutive checks (30s), kill and restart
+  if (failedHealthChecks >= 6) {
+    log(`[Daemon Watchdog] Agent unresponsive for 30s. Restarting process PID ${child.pid}...`);
+    try { process.kill(child.pid, 'SIGKILL'); } catch (_) {}
+    failedHealthChecks = 0;
+  }
+}, 5000);
+
 process.on('SIGINT', () => {
   isShuttingDown = true;
   log('[Daemon] SIGINT received, stopping...');
-  if (child) child.kill();
+  if (child) {
+    try { child.kill(); } catch (_) {}
+  }
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   isShuttingDown = true;
   log('[Daemon] SIGTERM received, stopping...');
-  if (child) child.kill();
+  if (child) {
+    try { child.kill(); } catch (_) {}
+  }
   process.exit(0);
 });

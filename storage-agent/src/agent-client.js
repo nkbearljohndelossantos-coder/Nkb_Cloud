@@ -24,8 +24,10 @@ export class AgentClient {
     this.ws = null;
     this.heartbeatTimer = null;
     this.scanTimer = null;
+    this.pingTimer = null;
     this.reconnectTimeout = null;
     this.reconnectDelay = 2000;
+    this.lastServerActivity = Date.now();
     this.isStopping = false;
     this.activeVolumes = [];
     this.authenticated = false;
@@ -99,9 +101,33 @@ export class AgentClient {
       this.ws.on('open', () => {
         console.log(`[StorageAgent] Secure socket opened with NKB Cloud Relay Hub. Awaiting authentication challenge...`);
         this.reconnectDelay = 2000;
+        this.lastServerActivity = Date.now();
+
+        // Active WebSocket ping keepalive every 10s to keep firewalls/NAT open
+        clearInterval(this.pingTimer);
+        this.pingTimer = setInterval(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            if (Date.now() - this.lastServerActivity > 35000) {
+              console.warn('[StorageAgent] No response from server for >35s. Terminating dead socket...');
+              try { this.ws.terminate(); } catch (_) {}
+              return;
+            }
+            try { this.ws.ping(); } catch (_) {}
+          }
+        }, 10000);
+      });
+
+      this.ws.on('ping', () => {
+        this.lastServerActivity = Date.now();
+        try { this.ws.pong(); } catch (_) {}
+      });
+
+      this.ws.on('pong', () => {
+        this.lastServerActivity = Date.now();
       });
 
       this.ws.on('message', async (data) => {
+        this.lastServerActivity = Date.now();
         try {
           // 1. Detect and Handle Native Binary WebSocket Streaming Frames (PERF-01)
           if (Buffer.isBuffer(data) && data.length >= 8 && data.subarray(0, 4).toString('utf8') === 'NKBS') {
@@ -266,8 +292,8 @@ export class AgentClient {
 
   scheduleReconnect() {
     if (this.isStopping) return;
-    this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30000);
-    console.log(`[StorageAgent] Reconnecting in ${Math.round(this.reconnectDelay / 1000)}s...`);
+    this.reconnectDelay = 2000; // Always reconnect immediately in 2s
+    console.log(`[StorageAgent] Reconnecting in 2s...`);
     clearTimeout(this.reconnectTimeout);
     this.reconnectTimeout = setTimeout(() => this.connect(), this.reconnectDelay);
   }
@@ -275,8 +301,10 @@ export class AgentClient {
   cleanup() {
     clearInterval(this.heartbeatTimer);
     clearInterval(this.scanTimer);
+    clearInterval(this.pingTimer);
     this.heartbeatTimer = null;
     this.scanTimer = null;
+    this.pingTimer = null;
   }
 
   stop() {
