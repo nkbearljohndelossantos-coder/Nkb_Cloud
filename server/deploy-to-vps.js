@@ -79,6 +79,10 @@ conn.on('ready', () => {
           '/opt/nkb-cloud/server/services/agentHub.js'
         );
         await uploadFile(
+          path.join(rootDir, 'server', 'services', 'authorizationService.js'),
+          '/opt/nkb-cloud/server/services/authorizationService.js'
+        );
+        await uploadFile(
           path.join(rootDir, 'server', 'routes', 'api.js'),
           '/opt/nkb-cloud/server/routes/api.js'
         );
@@ -97,6 +101,7 @@ conn.on('ready', () => {
           docker cp /opt/nkb-cloud/server/controllers/shareController.js nkb_cloud_backend:/app/controllers/shareController.js &&
           docker cp /opt/nkb-cloud/server/controllers/driveController.js nkb_cloud_backend:/app/controllers/driveController.js &&
           docker cp /opt/nkb-cloud/server/services/agentHub.js nkb_cloud_backend:/app/services/agentHub.js &&
+          docker cp /opt/nkb-cloud/server/services/authorizationService.js nkb_cloud_backend:/app/services/authorizationService.js &&
           docker cp /opt/nkb-cloud/server/routes/api.js nkb_cloud_backend:/app/routes/api.js &&
           docker restart nkb_cloud_backend &&
           docker restart nkb_cloud_frontend &&

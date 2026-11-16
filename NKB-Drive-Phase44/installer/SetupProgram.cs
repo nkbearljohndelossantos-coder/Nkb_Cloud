@@ -134,9 +134,8 @@ namespace NkbDrive.Installer
             this.Controls.Add(_pnlHeader);
         }
 
-        private void CheckWinFsp()
+        private static bool IsWinFspInstalled()
         {
-            _isWinFspDetected = false;
             // Check program files
             string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
             string pf64 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
@@ -144,8 +143,7 @@ namespace NkbDrive.Installer
             if (File.Exists(Path.Combine(pf86, "WinFsp", "bin", "winfsp-x64.dll")) ||
                 File.Exists(Path.Combine(pf64, "WinFsp", "bin", "winfsp-x64.dll")))
             {
-                _isWinFspDetected = true;
-                return;
+                return true;
             }
 
             // Check Registry
@@ -153,7 +151,7 @@ namespace NkbDrive.Installer
             {
                 using (RegistryKey k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WinFsp"))
                 {
-                    if (k != null) _isWinFspDetected = true;
+                    if (k != null) return true;
                 }
             }
             catch {}
@@ -162,10 +160,16 @@ namespace NkbDrive.Installer
             {
                 using (RegistryKey k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\WinFsp"))
                 {
-                    if (k != null) _isWinFspDetected = true;
+                    if (k != null) return true;
                 }
             }
             catch {}
+            return false;
+        }
+
+        private void CheckWinFsp()
+        {
+            _isWinFspDetected = IsWinFspInstalled();
         }
 
         private void ShowStep(int step)
@@ -208,16 +212,16 @@ namespace NkbDrive.Installer
 
                     Label lblWinFsp = new Label
                     {
-                        Text = "• Windows File System Proxy (WinFsp Runtime) — " + (_isWinFspDetected ? "DETECTED [Ready]" : "NOT FOUND (Download required)"),
+                        Text = "• Windows File System Proxy (WinFsp Runtime) — " + (_isWinFspDetected ? "DETECTED [Ready]" : "Will be automatically installed with setup"),
                         Location = new Point(16, 52),
                         Size = new Size(470, 22),
-                        ForeColor = _isWinFspDetected ? Color.FromArgb(16, 120, 50) : Color.DarkOrange,
+                        ForeColor = _isWinFspDetected ? Color.FromArgb(16, 120, 50) : Color.FromArgb(16, 120, 50),
                         Font = new Font("Segoe UI", 9f, FontStyle.Regular)
                     };
 
                     Label lblDriverInfo = new Label
                     {
-                        Text = _isWinFspDetected ? "Virtual filesystem provider ready to mount drive letter N:." : "Please install WinFsp 2.0+ from https://winfsp.dev before mounting virtual drive.",
+                        Text = _isWinFspDetected ? "Virtual filesystem provider ready to mount drive letter N:." : "WinFsp driver is bundled into setup and will install automatically.",
                         Location = new Point(16, 78),
                         Size = new Size(470, 22),
                         ForeColor = TextMuted,
@@ -425,6 +429,31 @@ namespace NkbDrive.Installer
                 UpdateProgress("Closing any running NKB Drive processes...", 35);
                 KillRunningProcess("NKBDrive");
 
+                // Ensure WinFsp driver is present
+                if (!_isWinFspDetected)
+                {
+                    try
+                    {
+                        UpdateProgress("Installing WinFsp Virtual FileSystem Driver...", 40);
+                        string tempMsi = Path.Combine(Path.GetTempPath(), "winfsp.msi");
+                        try
+                        {
+                            ExtractResource("winfsp.msi", tempMsi);
+                            if (File.Exists(tempMsi))
+                            {
+                                ProcessStartInfo psi = new ProcessStartInfo("msiexec.exe", "/i \"" + tempMsi + "\" /passive /norestart");
+                                psi.UseShellExecute = true;
+                                Process p = Process.Start(psi);
+                                if (p != null) p.WaitForExit();
+                                try { File.Delete(tempMsi); } catch {}
+                                _isWinFspDetected = true;
+                            }
+                        }
+                        catch {}
+                    }
+                    catch {}
+                }
+
                 // Extract binaries
                 UpdateProgress("Installing application binaries...", 50);
                 ExtractResource("NKBDrive.exe", Path.Combine(_targetDir, "NKBDrive.exe"));
@@ -506,6 +535,28 @@ namespace NkbDrive.Installer
                 Directory.CreateDirectory(targetDir);
 
             KillRunningProcess("NKBDrive");
+
+            if (!IsWinFspInstalled())
+            {
+                try
+                {
+                    string tempMsi = Path.Combine(Path.GetTempPath(), "winfsp.msi");
+                    try
+                    {
+                        ExtractResource("winfsp.msi", tempMsi);
+                        if (File.Exists(tempMsi))
+                        {
+                            ProcessStartInfo psi = new ProcessStartInfo("msiexec.exe", "/i \"" + tempMsi + "\" /passive /norestart");
+                            psi.UseShellExecute = true;
+                            Process p = Process.Start(psi);
+                            if (p != null) p.WaitForExit();
+                            try { File.Delete(tempMsi); } catch {}
+                        }
+                    }
+                    catch {}
+                }
+                catch {}
+            }
 
             Console.WriteLine("[INSTALL] Extracting binaries and visual branding...");
             ExtractResource("NKBDrive.exe", Path.Combine(targetDir, "NKBDrive.exe"));

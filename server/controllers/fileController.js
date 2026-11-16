@@ -139,7 +139,7 @@ export async function getExplorerItems(req, res) {
           AND s.is_revoked = FALSE
           AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)
           AND f.owner_id != $1
-          AND (s.shared_with_user_id = $1 OR (s.shared_with_department_id IS NOT NULL AND s.shared_with_department_id = $2))
+          AND (s.shared_with_user_id = $1 OR (s.shared_with_department_id IS NOT NULL AND s.shared_with_department_id = $2::int))
       `;
       fileQuery = `
         SELECT DISTINCT fi.*,
@@ -155,28 +155,28 @@ export async function getExplorerItems(req, res) {
           AND s.is_revoked = FALSE
           AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)
           AND fi.owner_id != $1
-          AND (s.shared_with_user_id = $1 OR (s.shared_with_department_id IS NOT NULL AND s.shared_with_department_id = $2))
+          AND (s.shared_with_user_id = $1 OR (s.shared_with_department_id IS NOT NULL AND s.shared_with_department_id = $2::int))
       `;
       folderParams.push(userId, deptId);
       fileParams.push(userId, deptId);
     } else {
       if (!folderId || folderId === 'root' || folderId === 'null') {
         if (userRole === 'SUPER ADMIN') {
-          folderQuery += ' AND parent_id IS NULL AND is_shared_drive = FALSE';
+          folderQuery += ' AND parent_id IS NULL';
           fileQuery += ' AND folder_id IS NULL';
         } else {
           const deptId = req.user.department_id;
           folderQuery += `
             AND parent_id IS NULL 
-            AND is_shared_drive = FALSE 
             AND (
               owner_id = $1 
+              OR ($2::int IS NOT NULL AND folders.department_id = $2::int)
               OR EXISTS (
                 SELECT 1 FROM file_shares fs 
                 WHERE fs.folder_id = folders.id 
                   AND fs.is_revoked = FALSE 
                   AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
-                  AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2))
+                  AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2::int))
               )
             )
           `;
@@ -189,7 +189,7 @@ export async function getExplorerItems(req, res) {
                 WHERE fs.file_id = files.id 
                   AND fs.is_revoked = FALSE 
                   AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
-                  AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2))
+                  AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2::int))
               )
             )
           `;

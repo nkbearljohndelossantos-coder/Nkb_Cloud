@@ -137,8 +137,9 @@ export async function verifyFolderAccess(userId, deptId, userRole, folderId, req
       return { allowed: true, reason: 'DIRECT_OWNER', effectiveRank: 4 };
     }
 
-    // 4. Department Shared Workspace Root
-    if (targetRow.is_department_root && targetRow.folder_dept_id === deptId) {
+    // 4. Department Shared Workspace (Target or Ancestor belongs to user's department)
+    const matchingDeptRow = res.rows.find(r => r.folder_dept_id && sanitizedDeptId && r.folder_dept_id === sanitizedDeptId);
+    if (matchingDeptRow) {
       const isDeptManager = (userRole === 'DEPARTMENT_MANAGER');
       const deptRank = isDeptManager ? 4 : 3;
       if (deptRank >= targetRank) {

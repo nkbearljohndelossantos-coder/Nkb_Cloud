@@ -85,7 +85,7 @@ export default function DownloadAppModal({ isOpen, onClose }) {
                 </div>
               </div>
 
-              <div className="mt-5">
+              <div className="mt-5 space-y-2">
                 <a
                   href="/downloads/NKBDriveSetup.exe"
                   download="NKBDriveSetup.exe"
@@ -94,6 +94,15 @@ export default function DownloadAppModal({ isOpen, onClose }) {
                   <Download className="w-4 h-4" />
                   <span>Download for Windows</span>
                 </a>
+                <div className="text-center">
+                  <a
+                    href="/downloads/winfsp.msi"
+                    download="winfsp.msi"
+                    className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-nkb-gold-600 dark:hover:text-nkb-gold-400 underline inline-flex items-center gap-1"
+                  >
+                    <span>Optional: Download WinFsp Driver directly (.msi)</span>
+                  </a>
+                </div>
               </div>
             </div>
 

@@ -616,6 +616,10 @@ namespace NkbDrive.Client
                 ctx.Entries.Add(new LocalFileRecord { Name = ".", Sha256 = "DIRECTORY" });
                 ctx.Entries.Add(new LocalFileRecord { Name = "..", Sha256 = "DIRECTORY" });
 
+                HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                seen.Add(".");
+                seen.Add("..");
+
                 // Query child entries from SQLite repository
                 var children = _repo.ListDirectoryEntries(currentDir);
                 foreach (var child in children)
@@ -628,6 +632,11 @@ namespace NkbDrive.Client
                     {
                         continue;
                     }
+                    if (seen.Contains(child.Name))
+                    {
+                        continue;
+                    }
+                    seen.Add(child.Name);
                     ctx.Entries.Add(child);
                 }
 
@@ -639,6 +648,15 @@ namespace NkbDrive.Client
                 }
 
                 context = ctx;
+            }
+            else
+            {
+                if (!string.IsNullOrEmpty(marker))
+                {
+                    int markerIdx = ctx.Entries.FindIndex(e => string.Equals(e.Name, marker, StringComparison.OrdinalIgnoreCase));
+                    if (markerIdx >= 0)
+                        ctx.Index = markerIdx + 1;
+                }
             }
 
             if (ctx.Index < ctx.Entries.Count)
