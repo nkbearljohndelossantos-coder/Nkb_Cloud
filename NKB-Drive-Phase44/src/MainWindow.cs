@@ -589,13 +589,16 @@ namespace NkbDrive.Client.UI
 
         private void InitializeEngine()
         {
+            string logFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NKB Drive", "boot.log");
             try
             {
+                File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] InitializeEngine started. dbPath=" + _dbPath + Environment.NewLine);
                 _repo = new SyncMetadataRepository(_dbPath);
                 _engine = new SyncEngine(_repo, _cacheDir);
                 _vault = new DpapiVault(_vaultPath);
 
                 StoredCredentials creds = _vault.LoadCredentials();
+                File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] creds loaded: " + (creds != null) + ", token=" + (creds != null && !string.IsNullOrEmpty(creds.AccessToken)) + Environment.NewLine);
                 if (creds != null && !string.IsNullOrEmpty(creds.AccessToken))
                 {
                     _client = new StagingApiClient(creds.ServerUrl ?? "http://127.0.0.1:5000");
@@ -605,15 +608,18 @@ namespace NkbDrive.Client.UI
                     _userNameText.Text = creds.UserEmail ?? "Authenticated Employee";
                     _userDeptText.Text = "Device: " + (creds.MachineName ?? Environment.MachineName);
 
+                    File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Calling StartMountAndSync()...\n");
                     StartMountAndSync();
                 }
                 else
                 {
+                    File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] creds null/empty, showing loginOverlay.\n");
                     _loginOverlay.Visibility = Visibility.Visible;
                 }
             }
             catch (Exception ex)
             {
+                File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] InitializeEngine EXCEPTION: " + ex.ToString() + Environment.NewLine);
                 MessageBox.Show("Error initializing storage engine: " + ex.Message, "NKB Drive Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 _loginOverlay.Visibility = Visibility.Visible;
             }
@@ -697,8 +703,10 @@ namespace NkbDrive.Client.UI
 
         private void StartMountAndSync()
         {
+            string logFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NKB Drive", "boot.log");
             try
             {
+                File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] StartMountAndSync entered.\n");
                 if (_host == null)
                 {
                     _host = new NkbDriveHost("N:", _repo, _client, _engine, _cacheDir);
@@ -706,7 +714,9 @@ namespace NkbDrive.Client.UI
 
                 if (!_host.IsMounted)
                 {
+                    File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Calling _host.Mount()...\n");
                     _host.Mount();
+                    File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] _host.Mount() completed! IsMounted=" + _host.IsMounted + Environment.NewLine);
                 }
 
                 _driveStatusText.Text = "● Drive N: MOUNTED";
@@ -756,13 +766,16 @@ namespace NkbDrive.Client.UI
                                     {
                                         string id = f["id"].ToString();
                                         string name = f["name"].ToString();
-                                        long size = f.ContainsKey("sizeBytes") && f["sizeBytes"] != null ? Convert.ToInt64(f["sizeBytes"]) : 0;
+                                        string path = f.ContainsKey("virtualPath") ? f["virtualPath"].ToString() : "\\" + name;
+                                        long size = 0;
+                                        if (f.ContainsKey("size_bytes") && f["size_bytes"] != null) long.TryParse(f["size_bytes"].ToString(), out size);
+                                        else if (f.ContainsKey("sizeBytes") && f["sizeBytes"] != null) long.TryParse(f["sizeBytes"].ToString(), out size);
                                         string sha = f.ContainsKey("sha256") && f["sha256"] != null ? f["sha256"].ToString() : "";
                                         serverIds.Add(id);
                                         _repo.UpsertFile(new LocalFileRecord
                                         {
                                             FileId = id,
-                                            RelativePath = "\\" + name,
+                                            RelativePath = path,
                                             Name = name,
                                             SizeBytes = size,
                                             Sha256 = sha,
@@ -1248,6 +1261,19 @@ namespace NkbDrive.Client.UI
 
             _loginOverlay.Visibility = Visibility.Visible;
             SwitchNavTab(0);
+        }
+
+        public bool IsExplicitExit { get; set; }
+
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            if (!IsExplicitExit)
+            {
+                e.Cancel = true;
+                this.Hide();
+                return;
+            }
+            base.OnClosing(e);
         }
 
         protected override void OnClosed(EventArgs e)

@@ -8,40 +8,48 @@ namespace NkbDrive.Client.Storage
 {
     public class LocalFileRecord
     {
-        public string FileId;
-        public string RelativePath;
-        public string Name;
-        public long SizeBytes;
-        public string Sha256;
-        public string SyncState; // 'ONLINE_ONLY', 'OFFLINE_PINNED', 'SYNC_PENDING', 'CONFLICT', 'SYNCED'
-        public string ServerUpdatedAt;
-        public string LocalUpdatedAt;
+        public string FileId { get; set; }
+        public string RelativePath { get; set; }
+        public string Name { get; set; }
+        public long SizeBytes { get; set; }
+        public string Sha256 { get; set; }
+        public string SyncState { get; set; } // 'ONLINE_ONLY', 'OFFLINE_PINNED', 'SYNC_PENDING', 'CONFLICT', 'SYNCED'
+        public string ServerUpdatedAt { get; set; }
+        public string LocalUpdatedAt { get; set; }
     }
 
     public class SyncQueueItem
     {
-        public long Id;
-        public string FileId;
-        public string Operation; // 'UPLOAD', 'DOWNLOAD', 'RENAME', 'MOVE', 'TRASH'
-        public string LocalPath;
-        public string TargetPath;
-        public int RetryCount;
-        public string NextRetryTime;
-        public string Status; // 'QUEUED', 'PROCESSING', 'FAILED', 'COMPLETED'
-        public string ErrorMessage;
-        public string CreatedAt;
+        public long Id { get; set; }
+        public string FileId { get; set; }
+        public string Operation { get; set; } // 'UPLOAD', 'DOWNLOAD', 'RENAME', 'MOVE', 'TRASH'
+        public string LocalPath { get; set; }
+        public string TargetPath { get; set; }
+        public int RetryCount { get; set; }
+        public string NextRetryTime { get; set; }
+        public string Status { get; set; } // 'QUEUED', 'PROCESSING', 'FAILED', 'COMPLETED'
+        public string ErrorMessage { get; set; }
+        public string CreatedAt { get; set; }
     }
 
     public class SyncConflictRecord
     {
-        public long Id;
-        public string OriginalFileId;
-        public string ConflictFileName;
-        public string BaseSha256;
-        public string ServerSha256;
-        public string LocalSha256;
-        public string DetectedAt;
-        public string ResolutionStatus;
+        public long Id { get; set; }
+        public string OriginalFileId { get; set; }
+        public string ConflictFileName { get; set; }
+        public string BaseSha256 { get; set; }
+        public string ServerSha256 { get; set; }
+        public string LocalSha256 { get; set; }
+        public string DetectedAt { get; set; }
+        public string ResolutionStatus { get; set; }
+    }
+
+    public class OfflinePinRecord
+    {
+        public string ItemId { get; set; }
+        public string ItemType { get; set; }
+        public string PinnedAt { get; set; }
+        public string PinnedByUser { get; set; }
     }
 
     public partial class SyncMetadataRepository : IDisposable
@@ -236,6 +244,7 @@ namespace NkbDrive.Client.Storage
 
         public LocalFileRecord GetFile(string fileId)
         {
+            if (string.IsNullOrEmpty(fileId)) return null;
             lock (_lock)
             {
                 IntPtr stmt;
@@ -270,6 +279,7 @@ namespace NkbDrive.Client.Storage
 
         public void UpdateSyncState(string fileId, string newState)
         {
+            if (string.IsNullOrEmpty(fileId)) return;
             lock (_lock)
             {
                 string sql = string.Format("UPDATE local_files SET sync_state = '{0}', local_updated_at = '{1}' WHERE file_id = '{2}';",
@@ -505,6 +515,7 @@ namespace NkbDrive.Client.Storage
 
         public LocalFileRecord GetFileByPath(string relativePath)
         {
+            if (string.IsNullOrEmpty(relativePath)) return null;
             lock (_lock)
             {
                 IntPtr stmt;
@@ -588,6 +599,7 @@ namespace NkbDrive.Client.Storage
 
         public void DeleteFileRecord(string fileId)
         {
+            if (string.IsNullOrEmpty(fileId)) return;
             lock (_lock)
             {
                 ExecuteNonQuery("DELETE FROM local_files WHERE file_id = '" + fileId.Replace("'", "''") + "';");
@@ -636,6 +648,7 @@ namespace NkbDrive.Client.Storage
 
         public void UpdateHashAndSize(string fileId, string sha256, long sizeBytes, string syncState)
         {
+            if (string.IsNullOrEmpty(fileId)) return;
             lock (_lock)
             {
                 string sql = string.Format(
@@ -695,6 +708,102 @@ namespace NkbDrive.Client.Storage
                     }
                 }
                 return null;
+            }
+        }
+
+        public int CountFiles()
+        {
+            return ScalarInt("SELECT COUNT(*) FROM local_files;");
+        }
+
+        public List<LocalFileRecord> ListRecentFiles(int limit = 50)
+        {
+            lock (_lock)
+            {
+                var list = new List<LocalFileRecord>();
+                IntPtr stmt;
+                string sql = "SELECT file_id, relative_path, name, size_bytes, sha256, sync_state, server_updated_at, local_updated_at FROM local_files ORDER BY local_updated_at DESC LIMIT " + limit + ";";
+                if (SqliteNative.sqlite3_prepare16_v2(_db, sql, -1, out stmt, IntPtr.Zero) == SqliteNative.SQLITE_OK)
+                {
+                    try
+                    {
+                        while (SqliteNative.sqlite3_step(stmt) == SqliteNative.SQLITE_ROW)
+                        {
+                            list.Add(ReadFileRow(stmt));
+                        }
+                    }
+                    finally
+                    {
+                        SqliteNative.sqlite3_finalize(stmt);
+                    }
+                }
+                return list;
+            }
+        }
+
+        public List<SyncConflictRecord> ListConflicts()
+        {
+            lock (_lock)
+            {
+                var list = new List<SyncConflictRecord>();
+                IntPtr stmt;
+                string sql = "SELECT id, original_file_id, conflict_file_name, base_sha256, server_sha256, local_sha256, detected_at, resolution_status FROM sync_conflicts ORDER BY id DESC;";
+                if (SqliteNative.sqlite3_prepare16_v2(_db, sql, -1, out stmt, IntPtr.Zero) == SqliteNative.SQLITE_OK)
+                {
+                    try
+                    {
+                        while (SqliteNative.sqlite3_step(stmt) == SqliteNative.SQLITE_ROW)
+                        {
+                            list.Add(new SyncConflictRecord
+                            {
+                                Id = SqliteNative.sqlite3_column_int64(stmt, 0),
+                                OriginalFileId = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 1)),
+                                ConflictFileName = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 2)),
+                                BaseSha256 = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 3)),
+                                ServerSha256 = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 4)),
+                                LocalSha256 = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 5)),
+                                DetectedAt = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 6)),
+                                ResolutionStatus = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 7))
+                            });
+                        }
+                    }
+                    finally
+                    {
+                        SqliteNative.sqlite3_finalize(stmt);
+                    }
+                }
+                return list;
+            }
+        }
+
+        public List<OfflinePinRecord> ListPinnedItems()
+        {
+            lock (_lock)
+            {
+                var list = new List<OfflinePinRecord>();
+                IntPtr stmt;
+                string sql = "SELECT item_id, item_type, pinned_at, pinned_by_user FROM offline_pins ORDER BY pinned_at DESC;";
+                if (SqliteNative.sqlite3_prepare16_v2(_db, sql, -1, out stmt, IntPtr.Zero) == SqliteNative.SQLITE_OK)
+                {
+                    try
+                    {
+                        while (SqliteNative.sqlite3_step(stmt) == SqliteNative.SQLITE_ROW)
+                        {
+                            list.Add(new OfflinePinRecord
+                            {
+                                ItemId = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 0)),
+                                ItemType = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 1)),
+                                PinnedAt = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 2)),
+                                PinnedByUser = Marshal.PtrToStringUni(SqliteNative.sqlite3_column_text16(stmt, 3))
+                            });
+                        }
+                    }
+                    finally
+                    {
+                        SqliteNative.sqlite3_finalize(stmt);
+                    }
+                }
+                return list;
             }
         }
 

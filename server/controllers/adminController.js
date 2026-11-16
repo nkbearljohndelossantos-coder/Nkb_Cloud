@@ -232,8 +232,161 @@ export async function rotateAgentKey(req, res) {
 
 export async function getDepartments(req, res) {
   try {
-    const deptsRes = await db.query('SELECT * FROM departments ORDER BY name ASC');
+    const deptsRes = await db.query(`
+      SELECT d.*, 
+             COUNT(DISTINCT u.id) FILTER (WHERE u.status = 'ACTIVE') AS member_count,
+             COUNT(DISTINCT f.id) FILTER (WHERE f.is_trashed = FALSE) AS folder_count
+      FROM departments d
+      LEFT JOIN users u ON u.department_id = d.id
+      LEFT JOIN folders f ON f.department_id = d.id
+      GROUP BY d.id
+      ORDER BY d.id ASC
+    `);
     res.json({ departments: deptsRes.rows || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function createDepartment(req, res) {
+  try {
+    const { name, code, description, createFolder = true } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Department name is required' });
+    }
+
+    const cleanName = name.trim();
+    let cleanCode = code ? code.trim().toUpperCase() : cleanName.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 6);
+    if (!cleanCode) cleanCode = cleanName.slice(0, 4).toUpperCase();
+
+    // Check duplicate name or code
+    const existing = await db.query(
+      'SELECT id, name, code FROM departments WHERE LOWER(name) = LOWER($1) OR code = $2',
+      [cleanName, cleanCode]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'A department with this name or code already exists.' });
+    }
+
+    const insertRes = await db.query(
+      `INSERT INTO departments (name, code, description)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [cleanName, cleanCode, description ? description.trim() : null]
+    );
+    const newDept = insertRes.rows[0];
+
+    // Optionally create root department folder in Drive
+    let createdFolder = null;
+    if (createFolder) {
+      const folderId = crypto.randomUUID();
+      const folderRes = await db.query(
+        `INSERT INTO folders (id, name, parent_id, owner_id, department_id, is_shared_drive, color)
+         VALUES ($1, $2, NULL, $3, $4, TRUE, '#D97706')
+         RETURNING *`,
+        [folderId, cleanName, req.user.id, newDept.id]
+      );
+      createdFolder = folderRes.rows[0];
+    }
+
+    await db.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+       VALUES ($1, 'DEPARTMENT_CREATED', 'DEPARTMENT', $2, $3)`,
+      [req.user.id, String(newDept.id), JSON.stringify({ name: cleanName, code: cleanCode, createFolder })]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: `Department '${cleanName}' created successfully`,
+      department: newDept,
+      folder: createdFolder
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function updateDepartment(req, res) {
+  try {
+    const { id } = req.params;
+    const { name, code, description } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Department name is required' });
+    }
+
+    const cleanName = name.trim();
+    let cleanCode = code ? code.trim().toUpperCase() : '';
+
+    const updateRes = await db.query(
+      `UPDATE departments
+       SET name = $1,
+           code = COALESCE(NULLIF($2, ''), code),
+           description = $3,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $4
+       RETURNING *`,
+      [cleanName, cleanCode, description ? description.trim() : null, id]
+    );
+
+    if (!updateRes.rows.length) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
+    // Sync root folder name if matching
+    await db.query(
+      'UPDATE folders SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE department_id = $2 AND parent_id IS NULL',
+      [cleanName, id]
+    );
+
+    await db.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+       VALUES ($1, 'DEPARTMENT_UPDATED', 'DEPARTMENT', $2, $3)`,
+      [req.user.id, String(id), JSON.stringify({ name: cleanName, code: cleanCode })]
+    );
+
+    res.json({
+      success: true,
+      message: 'Department updated successfully',
+      department: updateRes.rows[0]
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function deleteDepartment(req, res) {
+  try {
+    const { id } = req.params;
+
+    // Check if any users exist in this department
+    const usersRes = await db.query('SELECT count(*) FROM users WHERE department_id = $1', [id]);
+    const userCount = parseInt(usersRes.rows[0]?.count || 0, 10);
+    if (userCount > 0) {
+      await db.query('UPDATE users SET department_id = NULL WHERE department_id = $1', [id]);
+    }
+
+    // Unlink folders
+    await db.query('UPDATE folders SET department_id = NULL WHERE department_id = $1', [id]);
+    // Delete file shares
+    await db.query('DELETE FROM file_shares WHERE shared_with_department_id = $1', [id]);
+    // Unlink invites
+    await db.query('UPDATE user_invites SET department_id = NULL WHERE department_id = $1', [id]);
+
+    const delRes = await db.query('DELETE FROM departments WHERE id = $1 RETURNING name, code', [id]);
+    if (!delRes.rows.length) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
+    await db.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+       VALUES ($1, 'DEPARTMENT_DELETED', 'DEPARTMENT', $2, $3)`,
+      [req.user.id, String(id), JSON.stringify(delRes.rows[0])]
+    );
+
+    res.json({
+      success: true,
+      message: `Department '${delRes.rows[0].name}' deleted successfully`
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

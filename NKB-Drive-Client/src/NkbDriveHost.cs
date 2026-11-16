@@ -76,6 +76,8 @@ namespace NkbDrive.Client
             _syncWorkerThread = new Thread(SyncWorkerLoop);
             _syncWorkerThread.IsBackground = true;
             _syncWorkerThread.Start();
+
+            RegisterDriveIcon(_mountPoint);
         }
 
         public void Unmount()
@@ -123,7 +125,7 @@ namespace NkbDrive.Client
                         // Add Root Folders
                         if (tree.ContainsKey("rootFolders"))
                         {
-                            object[] roots = tree["rootFolders"] as object[];
+                            var roots = tree["rootFolders"] as System.Collections.IEnumerable;
                             if (roots != null)
                             {
                                 foreach (var r in roots)
@@ -152,7 +154,7 @@ namespace NkbDrive.Client
                         // Add Files
                         if (tree.ContainsKey("files"))
                         {
-                            object[] files = tree["files"] as object[];
+                            var files = tree["files"] as System.Collections.IEnumerable;
                             if (files != null)
                             {
                                 foreach (var f in files)
@@ -162,7 +164,9 @@ namespace NkbDrive.Client
                                     {
                                         string name = file["name"].ToString();
                                         string path = file.ContainsKey("virtualPath") ? file["virtualPath"].ToString() : "\\" + name;
-                                        long size = Convert.ToInt64(file["size_bytes"]);
+                                        long size = 0;
+                                        if (file.ContainsKey("size_bytes") && file["size_bytes"] != null) long.TryParse(file["size_bytes"].ToString(), out size);
+                                        else if (file.ContainsKey("sizeBytes") && file["sizeBytes"] != null) long.TryParse(file["sizeBytes"].ToString(), out size);
                                         string sha = file.ContainsKey("sha256") ? file["sha256"].ToString() : "";
                                         _repo.UpsertFile(new LocalFileRecord
                                         {
@@ -359,6 +363,38 @@ namespace NkbDrive.Client
                         long next = Convert.ToInt64(chRes["nextCursor"]);
                         _repo.SetCursor(next);
                     }
+                }
+            }
+            catch {}
+        }
+
+        [System.Runtime.InteropServices.DllImport("shell32.dll")]
+        private static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
+
+        private void RegisterDriveIcon(string mount)
+        {
+            try
+            {
+                string letter = mount.TrimEnd('\\', ':');
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string iconPath = Path.Combine(baseDir, "nkb-drive.ico");
+                if (!File.Exists(iconPath))
+                {
+                    string localProg = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Programs\NKB Drive\nkb-drive.ico");
+                    if (File.Exists(localProg)) iconPath = localProg;
+                }
+
+                if (File.Exists(iconPath))
+                {
+                    using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\" + letter + @"\DefaultIcon"))
+                    {
+                        if (key != null) key.SetValue("", iconPath);
+                    }
+                    using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\" + letter + @"\DefaultLabel"))
+                    {
+                        if (key != null) key.SetValue("", "NKB Drive");
+                    }
+                    SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
                 }
             }
             catch {}

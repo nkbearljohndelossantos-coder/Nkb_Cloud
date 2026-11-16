@@ -24,6 +24,7 @@ router.post('/auth/register', authCtrl.registerWithInvite);
 // File Explorer & Storage Operations
 router.get('/files', authenticateToken, fileCtrl.getExplorerItems);
 router.post('/files/folder', authenticateToken, fileCtrl.createFolder);
+router.put('/files/folder/:id/department', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), fileCtrl.assignFolderDepartment);
 
 // Resumable Chunked Uploads
 router.post('/files/upload/initiate', authenticateToken, fileCtrl.initiateUploadSession);
@@ -87,8 +88,11 @@ router.get('/shares/item', authenticateToken, shareCtrl.getItemShares);
 router.delete('/shares/:id', authenticateToken, shareCtrl.revokeShare);
 router.get('/shares/public/:token', shareCtrl.getPublicShareInfo);
 
-// Department & User directory for Sharing
+// Department Directory & Management
 router.get('/departments', authenticateToken, adminCtrl.getDepartments);
+router.post('/departments', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.createDepartment);
+router.put('/departments/:id', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.updateDepartment);
+router.delete('/departments/:id', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.deleteDepartment);
 router.get('/users/shareable', authenticateToken, adminCtrl.getShareableUsers);
 
 // Administration & Audit Routes

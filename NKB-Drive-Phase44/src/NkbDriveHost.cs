@@ -125,7 +125,7 @@ namespace NkbDrive.Client
                         // Add Root Folders
                         if (tree.ContainsKey("rootFolders"))
                         {
-                            object[] roots = tree["rootFolders"] as object[];
+                            var roots = tree["rootFolders"] as System.Collections.IEnumerable;
                             if (roots != null)
                             {
                                 foreach (var r in roots)
@@ -154,7 +154,7 @@ namespace NkbDrive.Client
                         // Add Files
                         if (tree.ContainsKey("files"))
                         {
-                            object[] files = tree["files"] as object[];
+                            var files = tree["files"] as System.Collections.IEnumerable;
                             if (files != null)
                             {
                                 foreach (var f in files)
@@ -164,7 +164,9 @@ namespace NkbDrive.Client
                                     {
                                         string name = file["name"].ToString();
                                         string path = file.ContainsKey("virtualPath") ? file["virtualPath"].ToString() : "\\" + name;
-                                        long size = Convert.ToInt64(file["size_bytes"]);
+                                        long size = 0;
+                                        if (file.ContainsKey("size_bytes") && file["size_bytes"] != null) long.TryParse(file["size_bytes"].ToString(), out size);
+                                        else if (file.ContainsKey("sizeBytes") && file["sizeBytes"] != null) long.TryParse(file["sizeBytes"].ToString(), out size);
                                         string sha = file.ContainsKey("sha256") ? file["sha256"].ToString() : "";
                                         _repo.UpsertFile(new LocalFileRecord
                                         {

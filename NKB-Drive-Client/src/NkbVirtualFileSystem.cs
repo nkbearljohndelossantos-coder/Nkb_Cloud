@@ -354,11 +354,15 @@ namespace NkbDrive.Client
                     bytesTransferred = length;
                     desc.IsDirty = true;
 
-                    LocalFileRecord rec = _repo.GetFile(desc.FileId);
+                    LocalFileRecord rec = (!string.IsNullOrEmpty(desc.FileId)) ? _repo.GetFile(desc.FileId) : null;
                     if (rec != null)
                     {
                         rec.SizeBytes = desc.Stream.Length;
                         PopulateFileInfo(rec, out fileInfo);
+                    }
+                    else
+                    {
+                        PopulateFileInfo(new LocalFileRecord { SizeBytes = desc.Stream.Length }, out fileInfo);
                     }
                     return STATUS_SUCCESS;
                 }
@@ -380,7 +384,17 @@ namespace NkbDrive.Client
             {
                 try { desc.Stream.Flush(); } catch {}
             }
-            LocalFileRecord rec = desc != null ? _repo.GetFile(desc.FileId) : null;
+            LocalFileRecord rec = null;
+            if (desc != null)
+            {
+                if (!string.IsNullOrEmpty(desc.FileId))
+                    rec = _repo.GetFile(desc.FileId);
+                else if (!string.IsNullOrEmpty(desc.RelativePath))
+                    rec = _repo.GetFileByPath(desc.RelativePath);
+
+                if (rec == null && (desc.RelativePath == "\\" || desc.IsDirectory))
+                    rec = new LocalFileRecord { RelativePath = desc.RelativePath ?? "\\", Sha256 = "DIRECTORY" };
+            }
             PopulateFileInfo(rec, out fileInfo);
             return STATUS_SUCCESS;
         }
@@ -388,7 +402,17 @@ namespace NkbDrive.Client
         public override int GetFileInfo(object fileNode, object fileDesc, out Fsp.Interop.FileInfo fileInfo)
         {
             VfsNodeDesc desc = (VfsNodeDesc)fileDesc;
-            LocalFileRecord rec = desc != null ? _repo.GetFile(desc.FileId) : null;
+            LocalFileRecord rec = null;
+            if (desc != null)
+            {
+                if (!string.IsNullOrEmpty(desc.FileId))
+                    rec = _repo.GetFile(desc.FileId);
+                else if (!string.IsNullOrEmpty(desc.RelativePath))
+                    rec = _repo.GetFileByPath(desc.RelativePath);
+
+                if (rec == null && (desc.RelativePath == "\\" || desc.IsDirectory))
+                    rec = new LocalFileRecord { RelativePath = desc.RelativePath ?? "\\", Sha256 = "DIRECTORY" };
+            }
             PopulateFileInfo(rec, out fileInfo);
             return STATUS_SUCCESS;
         }
@@ -405,8 +429,16 @@ namespace NkbDrive.Client
                 }
                 catch {}
             }
-            LocalFileRecord rec = desc != null ? _repo.GetFile(desc.FileId) : null;
-            if (rec != null) rec.SizeBytes = (long)newSize;
+            LocalFileRecord rec = null;
+            if (desc != null)
+            {
+                if (!string.IsNullOrEmpty(desc.FileId))
+                    rec = _repo.GetFile(desc.FileId);
+                else if (!string.IsNullOrEmpty(desc.RelativePath))
+                    rec = _repo.GetFileByPath(desc.RelativePath);
+
+                if (rec != null) rec.SizeBytes = (long)newSize;
+            }
             PopulateFileInfo(rec, out fileInfo);
             return STATUS_SUCCESS;
         }
@@ -531,8 +563,15 @@ namespace NkbDrive.Client
             }
 
             LocalFileRecord dstRec = _repo.GetFileByPath(dstRel);
-            if (dstRec != null && !replaceIfExists)
-                return STATUS_OBJECT_NAME_COLLISION;
+            if (dstRec != null)
+            {
+                if (!replaceIfExists)
+                    return STATUS_OBJECT_NAME_COLLISION;
+
+                // Safe non-destructive replace: route replaced file to Recycle Bin workflow
+                _repo.Enqueue(dstRec.FileId, "TRASH", dstRel, null);
+                _repo.DeleteFileRecord(dstRec.FileId);
+            }
 
             string newName = Path.GetFileName(dstRel);
             string srcDir = Path.GetDirectoryName(srcRel) ?? "\\";
@@ -579,7 +618,18 @@ namespace NkbDrive.Client
 
                 // Query child entries from SQLite repository
                 var children = _repo.ListDirectoryEntries(currentDir);
-                ctx.Entries.AddRange(children);
+                foreach (var child in children)
+                {
+                    if (string.IsNullOrEmpty(child.Name)) continue;
+                    string nameLower = child.Name.ToLowerInvariant();
+                    // Never expose desktop.ini, thumbs.db, .ds_store, or hidden dot-files in directory enumeration
+                    if (nameLower == "desktop.ini" || nameLower == "thumbs.db" || nameLower == ".ds_store" ||
+                        (child.Name.Length > 1 && child.Name.StartsWith(".") && child.Name != ".." && child.Name != "."))
+                    {
+                        continue;
+                    }
+                    ctx.Entries.Add(child);
+                }
 
                 if (!string.IsNullOrEmpty(marker))
                 {

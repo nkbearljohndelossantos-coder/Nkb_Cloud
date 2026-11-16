@@ -47,6 +47,8 @@ export default function FileManagerView({
   const [viewMode, setViewMode] = useState('grid');
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderDeptId, setNewFolderDeptId] = useState('');
+  const [departments, setDepartments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadFileName, setUploadFileName] = useState('');
@@ -79,6 +81,15 @@ export default function FileManagerView({
     };
   }, [user?.isOutsideCompany]);
 
+  useEffect(() => {
+    api.get('/departments')
+      .then((res) => {
+        const depts = res.data?.departments || (Array.isArray(res.data) ? res.data : []);
+        setDepartments(depts);
+      })
+      .catch(() => {});
+  }, []);
+
   const getViewTitle = () => {
     if (currentView === 'trash') return 'Trash / Recycle Bin';
     if (currentView === 'starred') return 'Starred Files';
@@ -98,9 +109,11 @@ export default function FileManagerView({
       await api.post('/files/folder', {
         name: newFolderName.trim(),
         parentId: currentFolderId,
-        isSharedDrive: currentView === 'shared-drives'
+        isSharedDrive: currentView === 'shared-drives',
+        departmentId: newFolderDeptId ? parseInt(newFolderDeptId, 10) : undefined
       });
       setNewFolderName('');
+      setNewFolderDeptId('');
       setNewFolderOpen(false);
       onRefresh();
     } catch (err) {
@@ -719,19 +732,51 @@ export default function FileManagerView({
           <div className="bg-white rounded border border-slate-200 max-w-sm w-full p-6 space-y-4 shadow-xl">
             <h3 className="font-bold text-sm text-nkb-navy-900">Create New Directory</h3>
             <form onSubmit={handleCreateFolder} className="space-y-4">
-              <input
-                type="text"
-                autoFocus
-                placeholder="Folder name..."
-                value={newFolderName}
-                onChange={(e) => setNewFolderName(e.target.value)}
-                className="w-full border border-slate-300 rounded px-3 py-2 text-xs focus:ring-1 focus:ring-nkb-gold-500 focus:outline-none"
-                required
-              />
-              <div className="flex justify-end space-x-2">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Directory Name
+                </label>
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="Folder name..."
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  className="w-full border border-slate-300 rounded px-3 py-2 text-xs focus:ring-1 focus:ring-nkb-gold-500 focus:outline-none"
+                  required
+                />
+              </div>
+
+              {departments.length > 0 && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Assign to Department (Optional)
+                  </label>
+                  <select
+                    value={newFolderDeptId}
+                    onChange={(e) => setNewFolderDeptId(e.target.value)}
+                    className="w-full border border-slate-300 rounded px-3 py-2 text-xs focus:ring-1 focus:ring-nkb-gold-500 focus:outline-none bg-white text-slate-800"
+                  >
+                    <option value="">-- No Department (Personal / Unassigned) --</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} ({d.code})
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Department members will automatically gain synchronized access in NKB Drive.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex justify-end space-x-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setNewFolderOpen(false)}
+                  onClick={() => {
+                    setNewFolderOpen(false);
+                    setNewFolderDeptId('');
+                  }}
                   className="px-4 py-2 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50"
                 >
                   Cancel

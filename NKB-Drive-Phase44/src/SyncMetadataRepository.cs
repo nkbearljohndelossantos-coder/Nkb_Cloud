@@ -244,6 +244,7 @@ namespace NkbDrive.Client.Storage
 
         public LocalFileRecord GetFile(string fileId)
         {
+            if (string.IsNullOrEmpty(fileId)) return null;
             lock (_lock)
             {
                 IntPtr stmt;
@@ -278,6 +279,7 @@ namespace NkbDrive.Client.Storage
 
         public void UpdateSyncState(string fileId, string newState)
         {
+            if (string.IsNullOrEmpty(fileId)) return;
             lock (_lock)
             {
                 string sql = string.Format("UPDATE local_files SET sync_state = '{0}', local_updated_at = '{1}' WHERE file_id = '{2}';",
@@ -513,6 +515,7 @@ namespace NkbDrive.Client.Storage
 
         public LocalFileRecord GetFileByPath(string relativePath)
         {
+            if (string.IsNullOrEmpty(relativePath)) return null;
             lock (_lock)
             {
                 IntPtr stmt;
@@ -596,6 +599,7 @@ namespace NkbDrive.Client.Storage
 
         public void DeleteFileRecord(string fileId)
         {
+            if (string.IsNullOrEmpty(fileId)) return;
             lock (_lock)
             {
                 ExecuteNonQuery("DELETE FROM local_files WHERE file_id = '" + fileId.Replace("'", "''") + "';");
@@ -644,6 +648,7 @@ namespace NkbDrive.Client.Storage
 
         public void UpdateHashAndSize(string fileId, string sha256, long sizeBytes, string syncState)
         {
+            if (string.IsNullOrEmpty(fileId)) return;
             lock (_lock)
             {
                 string sql = string.Format(

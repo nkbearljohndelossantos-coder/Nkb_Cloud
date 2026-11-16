@@ -354,11 +354,15 @@ namespace NkbDrive.Client
                     bytesTransferred = length;
                     desc.IsDirty = true;
 
-                    LocalFileRecord rec = _repo.GetFile(desc.FileId);
+                    LocalFileRecord rec = (!string.IsNullOrEmpty(desc.FileId)) ? _repo.GetFile(desc.FileId) : null;
                     if (rec != null)
                     {
                         rec.SizeBytes = desc.Stream.Length;
                         PopulateFileInfo(rec, out fileInfo);
+                    }
+                    else
+                    {
+                        PopulateFileInfo(new LocalFileRecord { SizeBytes = desc.Stream.Length }, out fileInfo);
                     }
                     return STATUS_SUCCESS;
                 }
@@ -380,7 +384,17 @@ namespace NkbDrive.Client
             {
                 try { desc.Stream.Flush(); } catch {}
             }
-            LocalFileRecord rec = desc != null ? _repo.GetFile(desc.FileId) : null;
+            LocalFileRecord rec = null;
+            if (desc != null)
+            {
+                if (!string.IsNullOrEmpty(desc.FileId))
+                    rec = _repo.GetFile(desc.FileId);
+                else if (!string.IsNullOrEmpty(desc.RelativePath))
+                    rec = _repo.GetFileByPath(desc.RelativePath);
+
+                if (rec == null && (desc.RelativePath == "\\" || desc.IsDirectory))
+                    rec = new LocalFileRecord { RelativePath = desc.RelativePath ?? "\\", Sha256 = "DIRECTORY" };
+            }
             PopulateFileInfo(rec, out fileInfo);
             return STATUS_SUCCESS;
         }
@@ -388,7 +402,17 @@ namespace NkbDrive.Client
         public override int GetFileInfo(object fileNode, object fileDesc, out Fsp.Interop.FileInfo fileInfo)
         {
             VfsNodeDesc desc = (VfsNodeDesc)fileDesc;
-            LocalFileRecord rec = desc != null ? _repo.GetFile(desc.FileId) : null;
+            LocalFileRecord rec = null;
+            if (desc != null)
+            {
+                if (!string.IsNullOrEmpty(desc.FileId))
+                    rec = _repo.GetFile(desc.FileId);
+                else if (!string.IsNullOrEmpty(desc.RelativePath))
+                    rec = _repo.GetFileByPath(desc.RelativePath);
+
+                if (rec == null && (desc.RelativePath == "\\" || desc.IsDirectory))
+                    rec = new LocalFileRecord { RelativePath = desc.RelativePath ?? "\\", Sha256 = "DIRECTORY" };
+            }
             PopulateFileInfo(rec, out fileInfo);
             return STATUS_SUCCESS;
         }
@@ -405,8 +429,16 @@ namespace NkbDrive.Client
                 }
                 catch {}
             }
-            LocalFileRecord rec = desc != null ? _repo.GetFile(desc.FileId) : null;
-            if (rec != null) rec.SizeBytes = (long)newSize;
+            LocalFileRecord rec = null;
+            if (desc != null)
+            {
+                if (!string.IsNullOrEmpty(desc.FileId))
+                    rec = _repo.GetFile(desc.FileId);
+                else if (!string.IsNullOrEmpty(desc.RelativePath))
+                    rec = _repo.GetFileByPath(desc.RelativePath);
+
+                if (rec != null) rec.SizeBytes = (long)newSize;
+            }
             PopulateFileInfo(rec, out fileInfo);
             return STATUS_SUCCESS;
         }

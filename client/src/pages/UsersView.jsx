@@ -18,7 +18,10 @@ import {
   Trash2,
   ExternalLink,
   Building2,
-  Sparkles
+  Sparkles,
+  Folder,
+  Plus,
+  CheckCircle2
 } from 'lucide-react';
 import api from '../api/client';
 import { formatBytes, formatDate } from '../utils/formatters';
@@ -61,15 +64,43 @@ export default function UsersView() {
   const [copiedInviteId, setCopiedInviteId] = useState(null);
   const [generatingInvite, setGeneratingInvite] = useState(false);
 
+  // Department Management State
+  const [deptModalOpen, setDeptModalOpen] = useState(false);
+  const [deptName, setDeptName] = useState('');
+  const [deptCode, setDeptCode] = useState('');
+  const [deptDescription, setDeptDescription] = useState('');
+  const [deptCreateFolder, setDeptCreateFolder] = useState(true);
+  const [savingDept, setSavingDept] = useState(false);
+
+  // Edit Department State
+  const [editDeptModalOpen, setEditDeptModalOpen] = useState(false);
+  const [editingDept, setEditingDept] = useState(null);
+  const [editDeptName, setEditDeptName] = useState('');
+  const [editDeptCode, setEditDeptCode] = useState('');
+  const [editDeptDescription, setEditDeptDescription] = useState('');
+
+  const fetchDepartments = async () => {
+    try {
+      const res = await api.get('/departments');
+      setDepartments(res.data.departments || []);
+    } catch (err) {
+      console.warn('Failed to load departments:', err.message);
+    }
+  };
+
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/admin/users');
-      setUsers(res.data.users);
-      setRoles(res.data.roles);
-      setDepartments(res.data.departments);
-      if (res.data.departments && res.data.departments.length > 0 && !inviteDepartmentId) {
-        setInviteDepartmentId(res.data.departments[0].id);
+      const [uRes, dRes] = await Promise.all([
+        api.get('/admin/users'),
+        api.get('/departments').catch(() => ({ data: { departments: [] } }))
+      ]);
+      setUsers(uRes.data.users);
+      setRoles(uRes.data.roles);
+      const fetchedDepts = dRes.data.departments?.length ? dRes.data.departments : uRes.data.departments || [];
+      setDepartments(fetchedDepts);
+      if (fetchedDepts.length > 0 && !inviteDepartmentId) {
+        setInviteDepartmentId(fetchedDepts[0].id);
       }
     } catch (err) {
       alert(err.response?.data?.error || err.message);
@@ -84,6 +115,68 @@ export default function UsersView() {
       setInvites(res.data.invites || []);
     } catch (err) {
       console.warn('[USERS VIEW] Could not fetch invites:', err.message);
+    }
+  };
+
+  const handleCreateDepartment = async (e) => {
+    e.preventDefault();
+    if (!deptName.trim()) return;
+    setSavingDept(true);
+    try {
+      await api.post('/departments', {
+        name: deptName.trim(),
+        code: deptCode.trim(),
+        description: deptDescription.trim(),
+        createFolder: deptCreateFolder
+      });
+      setDeptModalOpen(false);
+      setDeptName('');
+      setDeptCode('');
+      setDeptDescription('');
+      await fetchUsers();
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    } finally {
+      setSavingDept(false);
+    }
+  };
+
+  const handleOpenEditDept = (dept) => {
+    setEditingDept(dept);
+    setEditDeptName(dept.name);
+    setEditDeptCode(dept.code);
+    setEditDeptDescription(dept.description || '');
+    setEditDeptModalOpen(true);
+  };
+
+  const handleUpdateDepartment = async (e) => {
+    e.preventDefault();
+    if (!editDeptName.trim()) return;
+    setSavingDept(true);
+    try {
+      await api.put(`/departments/${editingDept.id}`, {
+        name: editDeptName.trim(),
+        code: editDeptCode.trim(),
+        description: editDeptDescription.trim()
+      });
+      setEditDeptModalOpen(false);
+      await fetchUsers();
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
+    } finally {
+      setSavingDept(false);
+    }
+  };
+
+  const handleDeleteDepartment = async (dept) => {
+    if (!confirm(`Are you sure you want to delete department '${dept.name}'? Existing users will be marked as Unassigned.`)) {
+      return;
+    }
+    try {
+      await api.delete(`/departments/${dept.id}`);
+      await fetchUsers();
+    } catch (err) {
+      alert(err.response?.data?.error || err.message);
     }
   };
 
@@ -218,6 +311,21 @@ export default function UsersView() {
             <RefreshCw className="w-4 h-4" />
           </button>
 
+          {/* Action: Add New Department */}
+          <button
+            onClick={() => {
+              setDeptName('');
+              setDeptCode('');
+              setDeptDescription('');
+              setDeptCreateFolder(true);
+              setDeptModalOpen(true);
+            }}
+            className="flex items-center space-x-2 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-xs shadow-sm transition"
+          >
+            <Building2 className="w-4 h-4 text-emerald-200" />
+            <span>+ Add Department</span>
+          </button>
+
           {/* Primary Action: Share Registration Link */}
           <button
             onClick={() => {
@@ -253,6 +361,18 @@ export default function UsersView() {
         >
           <Users className="w-4 h-4" />
           <span>Active Users ({users.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('departments')}
+          className={`pb-2.5 px-2 flex items-center space-x-2 transition border-b-2 ${
+            activeTab === 'departments'
+              ? 'border-nkb-navy-900 text-nkb-navy-900 font-bold'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <Building2 className="w-4 h-4" />
+          <span>Departments ({departments.length})</span>
         </button>
 
         <button
@@ -532,6 +652,177 @@ export default function UsersView() {
                 </tbody>
               </table>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: DEPARTMENTS DIRECTORY */}
+      {activeTab === 'departments' && (
+        <div className="space-y-4">
+          {/* Summary Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="p-4 bg-white rounded border border-slate-200 shadow-sm flex items-center space-x-3">
+              <div className="p-2.5 bg-blue-50 text-blue-700 rounded-lg">
+                <Building2 className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-xl font-bold text-nkb-navy-900">{departments.length}</div>
+                <div className="text-xs text-slate-500 font-medium">Total Active Departments</div>
+              </div>
+            </div>
+
+            <div className="p-4 bg-white rounded border border-slate-200 shadow-sm flex items-center space-x-3">
+              <div className="p-2.5 bg-emerald-50 text-emerald-700 rounded-lg">
+                <Folder className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-xl font-bold text-nkb-navy-900">
+                  {departments.filter(d => (parseInt(d.folder_count || 0, 10) > 0)).length}
+                </div>
+                <div className="text-xs text-slate-500 font-medium">Departments with Workspace Folders</div>
+              </div>
+            </div>
+
+            <div className="p-4 bg-white rounded border border-slate-200 shadow-sm flex items-center space-x-3">
+              <div className="p-2.5 bg-amber-50 text-amber-700 rounded-lg">
+                <Users className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-xl font-bold text-nkb-navy-900">
+                  {users.filter(u => u.department_id).length}
+                </div>
+                <div className="text-xs text-slate-500 font-medium">Employees Assigned to Departments</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Departments Table */}
+          <div className="bg-white rounded border border-slate-200 overflow-hidden shadow-sm">
+            <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+              <div>
+                <h2 className="text-xs font-bold text-nkb-navy-900 uppercase tracking-wider flex items-center space-x-2">
+                  <Building2 className="w-4 h-4 text-slate-600" />
+                  <span>Company Departments & Workspace Directory</span>
+                </h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Departments isolate file access and determine employee permissions in NKB Drive.
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setDeptName('');
+                  setDeptCode('');
+                  setDeptDescription('');
+                  setDeptCreateFolder(true);
+                  setDeptModalOpen(true);
+                }}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-xs shadow-sm transition flex items-center space-x-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Department</span>
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] font-bold border-b border-slate-200">
+                  <tr>
+                    <th className="py-2.5 px-4 font-semibold">Department Name</th>
+                    <th className="py-2.5 px-4 font-semibold">Code</th>
+                    <th className="py-2.5 px-4 font-semibold">Description</th>
+                    <th className="py-2.5 px-4 font-semibold">Members</th>
+                    <th className="py-2.5 px-4 font-semibold">Workspace Drive Folder</th>
+                    <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {departments.map((dept) => {
+                    const memberCount = dept.member_count !== undefined 
+                      ? parseInt(dept.member_count, 10) 
+                      : users.filter(u => u.department_id === dept.id).length;
+                    const hasFolder = parseInt(dept.folder_count || 0, 10) > 0;
+
+                    return (
+                      <tr key={dept.id} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-bold text-nkb-navy-900 flex items-center space-x-2">
+                          <div className="w-7 h-7 rounded bg-slate-100 text-slate-700 font-bold flex items-center justify-center border border-slate-200 flex-shrink-0 text-xs">
+                            {dept.code?.slice(0, 2) || dept.name?.slice(0, 2)}
+                          </div>
+                          <span>{dept.name}</span>
+                        </td>
+
+                        <td className="py-3 px-4">
+                          <span className="font-mono text-[11px] font-bold bg-slate-100 px-2 py-0.5 rounded border border-slate-200 text-slate-700">
+                            {dept.code}
+                          </span>
+                        </td>
+
+                        <td className="py-3 px-4 text-slate-600 max-w-xs truncate" title={dept.description}>
+                          {dept.description || <span className="text-slate-400 italic">No description</span>}
+                        </td>
+
+                        <td className="py-3 px-4">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                            memberCount > 0 
+                              ? 'bg-blue-50 text-blue-800 border-blue-200' 
+                              : 'bg-slate-50 text-slate-500 border-slate-200'
+                          }`}>
+                            {memberCount} employee{memberCount !== 1 ? 's' : ''}
+                          </span>
+                        </td>
+
+                        <td className="py-3 px-4">
+                          {hasFolder ? (
+                            <span className="inline-flex items-center space-x-1 px-2 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded text-[10px] font-semibold">
+                              <Folder className="w-3 h-3 text-emerald-600" />
+                              <span>Active Workspace</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center space-x-1 px-2 py-0.5 bg-slate-100 text-slate-500 border border-slate-200 rounded text-[10px]">
+                              <span>No Dedicated Folder</span>
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 text-right space-x-2 whitespace-nowrap">
+                          {/* Create Invite for this Department */}
+                          <button
+                            onClick={() => {
+                              setInviteDepartmentId(dept.id);
+                              setGeneratedInvite(null);
+                              setInviteModalOpen(true);
+                            }}
+                            className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-[11px] font-bold transition inline-flex items-center space-x-1"
+                            title="Generate Registration Link for this Department"
+                          >
+                            <Share2 className="w-3 h-3" />
+                            <span>Invite Member</span>
+                          </button>
+
+                          {/* Edit Department */}
+                          <button
+                            onClick={() => handleOpenEditDept(dept)}
+                            className="p-1 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded transition"
+                            title="Edit Department"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Delete Department */}
+                          <button
+                            onClick={() => handleDeleteDepartment(dept)}
+                            className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition"
+                            title="Delete Department"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -967,6 +1258,194 @@ export default function UsersView() {
                   className="px-4 py-2 bg-nkb-navy-900 hover:bg-nkb-navy-800 text-white rounded text-xs font-semibold shadow-sm"
                 >
                   Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: ADD NEW DEPARTMENT */}
+      {deptModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-2">
+                <Building2 className="w-5 h-5 text-emerald-600" />
+                <h3 className="text-sm font-bold text-nkb-navy-900">
+                  Add New Department
+                </h3>
+              </div>
+              <button
+                onClick={() => setDeptModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateDepartment} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Department Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Warehouse & Logistics, Accounting"
+                  value={deptName}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setDeptName(val);
+                    if (!deptCode) {
+                      const words = val.trim().split(/\s+/);
+                      const suggested = words.map(w => w[0]).join('').toUpperCase().slice(0, 5);
+                      setDeptCode(suggested);
+                    }
+                  }}
+                  className="w-full border border-slate-300 rounded px-3 py-2 text-xs focus:ring-1 focus:ring-nkb-gold-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Department Code (Uppercase) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={10}
+                  placeholder="e.g. WHL, ACC, HR"
+                  value={deptCode}
+                  onChange={(e) => setDeptCode(e.target.value.toUpperCase())}
+                  className="w-full border border-slate-300 rounded px-3 py-2 text-xs font-mono font-bold uppercase focus:ring-1 focus:ring-nkb-gold-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Description (Optional)
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="Department scope, functions, and responsibilities..."
+                  value={deptDescription}
+                  onChange={(e) => setDeptDescription(e.target.value)}
+                  className="w-full border border-slate-300 rounded px-3 py-2 text-xs focus:ring-1 focus:ring-nkb-gold-500 focus:outline-none resize-none"
+                />
+              </div>
+
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                <label className="flex items-start space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={deptCreateFolder}
+                    onChange={(e) => setDeptCreateFolder(e.target.checked)}
+                    className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <div className="text-xs">
+                    <span className="font-semibold text-slate-800">Create Dedicated Drive Workspace Folder</span>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Automatically creates a root folder in NKB Drive for this department so members can immediately sync files.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setDeptModalOpen(false)}
+                  className="px-4 py-2 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingDept || !deptName.trim()}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-bold shadow-sm disabled:opacity-50"
+                >
+                  {savingDept ? 'Creating...' : 'Create Department'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 5: EDIT DEPARTMENT */}
+      {editDeptModalOpen && editingDept && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-2">
+                <Edit2 className="w-5 h-5 text-slate-700" />
+                <h3 className="text-sm font-bold text-nkb-navy-900">
+                  Edit Department: {editingDept.name}
+                </h3>
+              </div>
+              <button
+                onClick={() => setEditDeptModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateDepartment} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Department Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editDeptName}
+                  onChange={(e) => setEditDeptName(e.target.value)}
+                  className="w-full border border-slate-300 rounded px-3 py-2 text-xs focus:ring-1 focus:ring-nkb-gold-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Department Code
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={10}
+                  value={editDeptCode}
+                  onChange={(e) => setEditDeptCode(e.target.value.toUpperCase())}
+                  className="w-full border border-slate-300 rounded px-3 py-2 text-xs font-mono font-bold uppercase focus:ring-1 focus:ring-nkb-gold-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Description
+                </label>
+                <textarea
+                  rows={2}
+                  value={editDeptDescription}
+                  onChange={(e) => setEditDeptDescription(e.target.value)}
+                  className="w-full border border-slate-300 rounded px-3 py-2 text-xs focus:ring-1 focus:ring-nkb-gold-500 focus:outline-none resize-none"
+                />
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditDeptModalOpen(false)}
+                  className="px-4 py-2 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingDept || !editDeptName.trim()}
+                  className="px-4 py-2 bg-nkb-navy-900 hover:bg-nkb-navy-800 text-white rounded text-xs font-bold shadow-sm disabled:opacity-50"
+                >
+                  {savingDept ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
             </form>

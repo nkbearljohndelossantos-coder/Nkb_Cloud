@@ -283,7 +283,7 @@ export async function getExplorerItems(req, res) {
 // 2. Create Folder
 export async function createFolder(req, res) {
   try {
-    const { name, parentId, isSharedDrive, color, preferredVolumeId } = req.body;
+    const { name, parentId, isSharedDrive, color, preferredVolumeId, departmentId } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Folder name is required' });
     }
@@ -302,16 +302,19 @@ export async function createFolder(req, res) {
       }
     }
 
+    const assignedDeptId = departmentId !== undefined ? (departmentId ? parseInt(departmentId, 10) : null) : req.user.department_id;
+
     const newFolderRes = await db.query(
       `INSERT INTO folders (id, name, parent_id, owner_id, department_id, is_shared_drive, color, preferred_volume_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [folderId, name.trim(), pid, req.user.id, req.user.department_id, Boolean(isSharedDrive), color || '#0F172A', preferredVolumeId || null]
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [folderId, name.trim(), pid, req.user.id, assignedDeptId, Boolean(isSharedDrive), color || '#0F172A', preferredVolumeId || null]
     );
 
     await db.query(
       `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
        VALUES ($1, $2, $3, $4, $5)`,
-      [req.user.id, 'FOLDER_CREATED', 'FOLDER', folderId, JSON.stringify({ name, parentId: pid })]
+      [req.user.id, 'FOLDER_CREATED', 'FOLDER', folderId, JSON.stringify({ name, parentId: pid, departmentId: assignedDeptId })]
     );
 
     try {
@@ -328,6 +331,40 @@ export async function createFolder(req, res) {
     res.status(201).json({
       message: 'Folder created successfully',
       folder: newFolderRes.rows[0] || { id: folderId, name, parent_id: pid }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// 2b. Assign or change Folder Department
+export async function assignFolderDepartment(req, res) {
+  try {
+    const { id } = req.params;
+    const { departmentId } = req.body;
+
+    const folderRes = await db.query('SELECT * FROM folders WHERE id = $1', [id]);
+    if (!folderRes.rows.length) {
+      return res.status(404).json({ error: 'Folder not found' });
+    }
+
+    const targetDeptId = departmentId ? parseInt(departmentId, 10) : null;
+    await db.query(
+      'UPDATE folders SET department_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [targetDeptId, id]
+    );
+
+    await db.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+       VALUES ($1, 'FOLDER_DEPARTMENT_ASSIGNED', 'FOLDER', $2, $3)`,
+      [req.user.id, id, JSON.stringify({ previousDepartmentId: folderRes.rows[0].department_id, newDepartmentId: targetDeptId })]
+    );
+
+    res.json({
+      success: true,
+      message: 'Folder department assigned successfully',
+      folderId: id,
+      departmentId: targetDeptId
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

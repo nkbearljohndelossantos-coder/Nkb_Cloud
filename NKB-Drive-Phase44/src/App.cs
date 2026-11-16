@@ -22,6 +22,20 @@ namespace NkbDrive.Client.UI
         [STAThread]
         public static void Main(string[] args)
         {
+            string logFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NKB Drive", "boot.log");
+            try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Main entered. Args: " + string.Join(" ", args) + Environment.NewLine); } catch {}
+
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                try
+                {
+                    string workDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NKB Drive");
+                    if (!Directory.Exists(workDir)) Directory.CreateDirectory(workDir);
+                    File.AppendAllText(Path.Combine(workDir, "crash.log"), "[" + DateTime.UtcNow.ToString("o") + "] UNHANDLED: " + e.ExceptionObject.ToString() + Environment.NewLine);
+                }
+                catch {}
+            };
+
             if (args != null && args.Length >= 4 && args[0].Equals("--cli-login", StringComparison.OrdinalIgnoreCase))
             {
                 string server = args[1];
@@ -33,8 +47,10 @@ namespace NkbDrive.Client.UI
 
             bool isNewInstance;
             _singleInstanceMutex = new Mutex(true, "Global\\NKBDrive_Enterprise_Client_Mutex", out isNewInstance);
+            try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Mutex acquired: " + isNewInstance + Environment.NewLine); } catch {}
             if (!isNewInstance)
             {
+                try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Not new instance. Exiting.\n"); } catch {}
                 MessageBox.Show("NKB Drive is already running in the system tray.", "NKB Drive", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
@@ -50,8 +66,10 @@ namespace NkbDrive.Client.UI
                 }
             }
 
+            try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Instantiating App... startMinimized=" + startMinimized + Environment.NewLine); } catch {}
             App app = new App();
             app.RunApplication(startMinimized);
+            try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] RunApplication finished.\n"); } catch {}
         }
 
         private static void CliLogin(string server, string email, string password)
@@ -177,17 +195,45 @@ namespace NkbDrive.Client.UI
 
         private void RunApplication(bool startMinimized)
         {
+            string logFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NKB Drive", "boot.log");
+            try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] In RunApplication...\n"); } catch {}
+
+            this.DispatcherUnhandledException += (s, e) =>
+            {
+                try
+                {
+                    string workDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NKB Drive");
+                    if (!Directory.Exists(workDir)) Directory.CreateDirectory(workDir);
+                    File.AppendAllText(Path.Combine(workDir, "crash.log"), "[" + DateTime.UtcNow.ToString("o") + "] DISPATCHER: " + e.Exception.ToString() + Environment.NewLine);
+                }
+                catch {}
+                e.Handled = true;
+            };
+
+            this.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Creating MainWindow...\n"); } catch {}
             _mainWindow = new MainWindow();
 
             // Initialize System Tray Icon
+            try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Initializing Tray Icon...\n"); } catch {}
             InitializeTrayIcon();
 
             if (!startMinimized)
             {
+                try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Showing MainWindow...\n"); } catch {}
                 _mainWindow.Show();
             }
+            else
+            {
+                try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Initializing Minimized HWND...\n"); } catch {}
+                _mainWindow.WindowState = WindowState.Minimized;
+                _mainWindow.Show();
+                _mainWindow.Hide();
+            }
 
-            Run(_mainWindow);
+            try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Invoking Run()...\n"); } catch {}
+            Run();
+            try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Run() returned!\n"); } catch {}
         }
 
         private void InitializeTrayIcon()
@@ -272,6 +318,7 @@ namespace NkbDrive.Client.UI
 
             if (_mainWindow != null)
             {
+                _mainWindow.IsExplicitExit = true;
                 _mainWindow.Close();
             }
 
