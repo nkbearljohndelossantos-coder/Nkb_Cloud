@@ -141,16 +141,29 @@ class StorageAgentHub {
         ws.on('pong', () => {
           ws.isAlive = true;
           const s = this.agents.get(agent.id);
-          if (s) s.isAlive = true;
+          if (s) {
+            s.isAlive = true;
+            s.missedPings = 0;
+          }
         });
 
         ws.on('ping', () => {
           ws.isAlive = true;
+          const s = this.agents.get(agent.id);
+          if (s) {
+            s.isAlive = true;
+            s.missedPings = 0;
+          }
           try { ws.pong(); } catch (_) {}
         });
 
         ws.on('message', async (data) => {
           ws.isAlive = true;
+          const s = this.agents.get(agent.id);
+          if (s) {
+            s.isAlive = true;
+            s.missedPings = 0;
+          }
           try {
             const message = JSON.parse(data.toString());
             await this.handleAgentMessage(agent.id, message, ws);
@@ -184,10 +197,15 @@ class StorageAgentHub {
           continue;
         }
         if (session.isAlive === false) {
-          console.warn(`[AgentHub] Ping timeout for agent ${agentId}. Terminating dead connection.`);
-          try { session.ws.terminate(); } catch (_) {}
-          this.agents.delete(agentId);
-          continue;
+          session.missedPings = (session.missedPings || 0) + 1;
+          if (session.missedPings >= 3) {
+            console.warn(`[AgentHub] Ping timeout (3 missed pings) for agent ${agentId}. Terminating dead connection.`);
+            try { session.ws.terminate(); } catch (_) {}
+            this.agents.delete(agentId);
+            continue;
+          }
+        } else {
+          session.missedPings = 0;
         }
         session.isAlive = false;
         try { session.ws.ping(); } catch (_) {}
@@ -404,7 +422,9 @@ class StorageAgentHub {
       agentSecret: challenge.secret,
       agentPublicKey: clientPublicKey || null,
       sessionToken,
-      authenticated: true
+      authenticated: true,
+      isAlive: true,
+      missedPings: 0
     });
 
     await db.query(
@@ -424,6 +444,11 @@ class StorageAgentHub {
   }
 
   async handleHeartbeat(agentId, payload) {
+    const session = this.agents.get(agentId);
+    if (session) {
+      session.isAlive = true;
+      session.missedPings = 0;
+    }
     const { cpuUsage, memoryUsage, activeDrivesCount } = payload || {};
     try {
       await db.query(

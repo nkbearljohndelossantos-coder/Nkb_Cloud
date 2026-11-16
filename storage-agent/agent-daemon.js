@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import http from 'http';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +29,21 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
   log(`[Daemon] UNHANDLED REJECTION PREVENTED: ${reason}`);
 });
+
+// Singleton Guard: Ensure only ONE watchdog daemon runs at a time
+const singletonServer = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ daemon: 'active', pid: process.pid, timestamp: new Date().toISOString() }));
+});
+
+singletonServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    log('[Daemon] Redundant daemon detected (Port 51249 in use). Primary daemon already running. Exiting.');
+    process.exit(0);
+  }
+});
+
+singletonServer.listen(51249, '127.0.0.1');
 
 log('[Daemon] NKB Storage Agent Watchdog starting up...');
 

@@ -222,17 +222,41 @@ export class FileStorageEngine {
     };
   }
 
+  findExistingFile(mountPath, relativePath) {
+    if (!mountPath || !relativePath) return null;
+    const candidates = [];
+    try { candidates.push(this.resolveSafePath(mountPath, relativePath)); } catch (_) {}
+    try { candidates.push(path.join(mountPath, 'NKB_Storage_Root', relativePath)); } catch (_) {}
+    try {
+      const driveRoot = path.parse(mountPath).root;
+      if (driveRoot && driveRoot.toLowerCase() !== path.resolve(mountPath).toLowerCase()) {
+        candidates.push(path.join(driveRoot, relativePath));
+        candidates.push(path.join(driveRoot, 'NKB_Storage_Root', relativePath));
+      }
+    } catch (_) {}
+    try {
+      const parentDir = path.dirname(mountPath);
+      if (parentDir && parentDir.toLowerCase() !== path.resolve(mountPath).toLowerCase()) {
+        candidates.push(path.join(parentDir, relativePath));
+      }
+    } catch (_) {}
+
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) {
+        return cand;
+      }
+    }
+    return null;
+  }
+
   // Range reading supporting high-performance streaming slices
   async readChunk({ mountPath, relativePath, startByte = 0, length }) {
     this.registerAllowlistedRoot(mountPath);
-    let targetPath = this.resolveSafePath(mountPath, relativePath);
+    let targetPath = this.findExistingFile(mountPath, relativePath);
 
-    if (!fs.existsSync(targetPath)) {
-      // Fallback: check in NKB_Storage_Root if not found at volume root
-      const fallbackPath = path.join(mountPath, 'NKB_Storage_Root', relativePath);
-      if (fs.existsSync(fallbackPath)) {
-        targetPath = fallbackPath;
-      } else {
+    if (!targetPath) {
+      targetPath = this.resolveSafePath(mountPath, relativePath);
+      if (!fs.existsSync(targetPath)) {
         throw new Error(`File not found: ${relativePath}`);
       }
     }
@@ -274,7 +298,8 @@ export class FileStorageEngine {
   // Cryptographic checksum verification
   async verifyChecksum({ mountPath, relativePath, expectedSha256 }) {
     this.registerAllowlistedRoot(mountPath);
-    const targetPath = this.resolveSafePath(mountPath, relativePath);
+    let targetPath = this.findExistingFile(mountPath, relativePath);
+    if (!targetPath) targetPath = this.resolveSafePath(mountPath, relativePath);
 
     if (!fs.existsSync(targetPath)) {
       return { isMatch: false, error: 'File missing on storage media' };
@@ -536,7 +561,8 @@ export class FileStorageEngine {
     }
 
     const resolvedRoot = path.resolve(volumeRoot);
-    const targetPath = this.resolveSafePath(volumeRoot, relativePath);
+    let targetPath = this.findExistingFile(volumeRoot, relativePath);
+    if (!targetPath) targetPath = this.resolveSafePath(volumeRoot, relativePath);
 
     if (!fs.existsSync(targetPath)) {
       throw new Error(`File not found: ${relativePath}`);
@@ -579,7 +605,8 @@ export class FileStorageEngine {
 
   // Safe read of text files for preview (capped at 256KB)
   async readTextPreview({ volumeRoot, relativePath, maxBytes = 256 * 1024 }) {
-    const targetPath = this.resolveSafePath(volumeRoot, relativePath);
+    let targetPath = this.findExistingFile(volumeRoot, relativePath);
+    if (!targetPath) targetPath = this.resolveSafePath(volumeRoot, relativePath);
     if (!fs.existsSync(targetPath)) {
       throw new Error(`File not found: ${relativePath}`);
     }
