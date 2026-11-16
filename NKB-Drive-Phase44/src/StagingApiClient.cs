@@ -16,9 +16,22 @@ namespace NkbDrive.Client
         private string _deviceId;
         private readonly JavaScriptSerializer _serializer;
 
+        static StagingApiClient()
+        {
+            try
+            {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | (SecurityProtocolType)12288 | (SecurityProtocolType)3072;
+                ServicePointManager.Expect100Continue = false;
+                ServicePointManager.DefaultConnectionLimit = 50;
+                ServicePointManager.ServerCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true;
+                WebRequest.DefaultWebProxy = null;
+            }
+            catch {}
+        }
+
         public StagingApiClient(string baseUrl = "http://127.0.0.1:5000")
         {
-            _baseUrl = baseUrl.TrimEnd('/');
+            _baseUrl = (baseUrl ?? "https://nkbcloud.nkbmanufacturing.com").TrimEnd('/');
             _serializer = new JavaScriptSerializer();
         }
 
@@ -32,8 +45,10 @@ namespace NkbDrive.Client
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
             req.Method = method;
             req.Proxy = null;
-            req.Timeout = 15000;
-            req.ReadWriteTimeout = 30000;
+            req.ServicePoint.Expect100Continue = false;
+            req.KeepAlive = true;
+            req.Timeout = 30000;
+            req.ReadWriteTimeout = 45000;
             if (!string.IsNullOrEmpty(_token))
             {
                 req.Headers["Authorization"] = "Bearer " + _token;
@@ -60,16 +75,40 @@ namespace NkbDrive.Client
                 s.Write(bytes, 0, bytes.Length);
             }
 
-            using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-            using (StreamReader r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+            try
             {
-                string json = r.ReadToEnd();
-                Dictionary<string, object> res = _serializer.Deserialize<Dictionary<string, object>>(json);
-                if (res != null && res.ContainsKey("token"))
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                using (StreamReader r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
                 {
-                    _token = res["token"].ToString();
+                    string json = r.ReadToEnd();
+                    Dictionary<string, object> res = _serializer.Deserialize<Dictionary<string, object>>(json);
+                    if (res != null && res.ContainsKey("token"))
+                    {
+                        _token = res["token"].ToString();
+                    }
+                    return res;
                 }
-                return res;
+            }
+            catch (WebException wex)
+            {
+                if (wex.Response != null)
+                {
+                    using (StreamReader r = new StreamReader(wex.Response.GetResponseStream(), Encoding.UTF8))
+                    {
+                        string errBody = r.ReadToEnd();
+                        try
+                        {
+                            var errObj = _serializer.Deserialize<Dictionary<string, object>>(errBody);
+                            if (errObj != null && errObj.ContainsKey("error"))
+                            {
+                                throw new InvalidOperationException(errObj["error"].ToString());
+                            }
+                        }
+                        catch (InvalidOperationException) { throw; }
+                        catch {}
+                    }
+                }
+                throw;
             }
         }
 
@@ -90,20 +129,44 @@ namespace NkbDrive.Client
                 s.Write(bytes, 0, bytes.Length);
             }
 
-            using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-            using (StreamReader r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+            try
             {
-                string json = r.ReadToEnd();
-                Dictionary<string, object> res = _serializer.Deserialize<Dictionary<string, object>>(json);
-                if (res != null && res.ContainsKey("device"))
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                using (StreamReader r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
                 {
-                    Dictionary<string, object> dev = res["device"] as Dictionary<string, object>;
-                    if (dev != null && dev.ContainsKey("id"))
+                    string json = r.ReadToEnd();
+                    Dictionary<string, object> res = _serializer.Deserialize<Dictionary<string, object>>(json);
+                    if (res != null && res.ContainsKey("device"))
                     {
-                        _deviceId = dev["id"].ToString();
+                        Dictionary<string, object> dev = res["device"] as Dictionary<string, object>;
+                        if (dev != null && dev.ContainsKey("id"))
+                        {
+                            _deviceId = dev["id"].ToString();
+                        }
+                    }
+                    return res;
+                }
+            }
+            catch (WebException wex)
+            {
+                if (wex.Response != null)
+                {
+                    using (StreamReader r = new StreamReader(wex.Response.GetResponseStream(), Encoding.UTF8))
+                    {
+                        string errBody = r.ReadToEnd();
+                        try
+                        {
+                            var errObj = _serializer.Deserialize<Dictionary<string, object>>(errBody);
+                            if (errObj != null && errObj.ContainsKey("error"))
+                            {
+                                throw new InvalidOperationException(errObj["error"].ToString());
+                            }
+                        }
+                        catch (InvalidOperationException) { throw; }
+                        catch {}
                     }
                 }
-                return res;
+                throw;
             }
         }
 

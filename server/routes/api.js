@@ -104,6 +104,7 @@ router.post('/admin/invites', authenticateToken, requireRole('SUPER ADMIN', 'ADM
 router.put('/admin/invites/:id/revoke', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.revokeInvite);
 router.delete('/admin/invites/:id', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.deleteInvite);
 router.get('/admin/audit-logs', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.getAuditLogs);
+router.get('/user/audit-logs', authenticateToken, adminCtrl.getUserAuditLogs);
 router.get('/admin/settings', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.getSystemSettings);
 router.put('/admin/settings/:key', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.updateSystemSetting);
 router.post('/admin/agent-token', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.generateAgentPairingToken);

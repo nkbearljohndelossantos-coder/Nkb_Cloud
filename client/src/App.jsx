@@ -50,7 +50,9 @@ export default function App() {
     try {
       const res = await api.get('/devices/my-device');
       setDeviceStatus(res.data);
-      if (res.data.state === 'AGENT_NOT_INSTALLED') {
+      // ONLY Super Admin setting up dedicated storage hosts should ever be shown the storage daemon prompt
+      const isSuperAdmin = user?.role === 'SUPER ADMIN';
+      if (isSuperAdmin && res.data.state === 'AGENT_NOT_INSTALLED') {
         const dismissed = localStorage.getItem('nkb_onboarding_dismissed');
         if (!dismissed) {
           setShowOnboardingModal(true);
@@ -64,15 +66,20 @@ export default function App() {
   // Fetch storage overview & volumes
   const fetchStorageData = async () => {
     try {
+      const isAdmin = user?.role === 'SUPER ADMIN' || user?.role === 'ADMIN';
+      const actPromise = isAdmin
+        ? api.get('/admin/audit-logs').catch(() => ({ data: { logs: [] } }))
+        : api.get('/user/audit-logs').catch(() => ({ data: { logs: [] } }));
+
       const [ovRes, volRes, actRes] = await Promise.all([
-        api.get('/storage/overview'),
-        api.get('/storage/volumes'),
-        api.get('/admin/audit-logs').catch(() => ({ data: { logs: [] } }))
+        api.get('/storage/overview').catch(() => ({ data: { overview: {} } })),
+        api.get('/storage/volumes').catch(() => ({ data: { volumes: [] } })),
+        actPromise
       ]);
-      setStorageOverview(ovRes.data.overview);
-      setVolumes(volRes.data.volumes);
+      setStorageOverview(ovRes.data.overview || {});
+      setVolumes(volRes.data.volumes || []);
       setRecentActivities(actRes.data.logs || []);
-      setAgentConnected(ovRes.data.overview.agentsOnline > 0);
+      setAgentConnected(ovRes.data.overview?.agentsOnline > 0);
       await checkDeviceStatus();
     } catch (err) {
       console.error('[APP] Error loading storage data:', err);

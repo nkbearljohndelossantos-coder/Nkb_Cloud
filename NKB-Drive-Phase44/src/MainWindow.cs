@@ -640,6 +640,10 @@ namespace NkbDrive.Client.UI
             _loginSubmitBtn.Content = "Connecting...";
 
             string server = _loginServerUrl.Text.Trim();
+            if (!server.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !server.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                server = "https://" + server;
+            }
             string email = _loginEmail.Text.Trim();
             string pass = _loginPassword.Password;
 

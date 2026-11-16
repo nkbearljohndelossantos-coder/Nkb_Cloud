@@ -111,6 +111,22 @@ export async function getAuditLogs(req, res) {
   }
 }
 
+export async function getUserAuditLogs(req, res) {
+  try {
+    const logsRes = await db.query(
+      `SELECT a.*, u.full_name as user_name, u.email as user_email
+       FROM audit_logs a
+       LEFT JOIN users u ON a.user_id = u.id
+       WHERE a.user_id = $1
+       ORDER BY a.created_at DESC LIMIT 50`,
+      [req.user.id]
+    );
+    res.json({ logs: logsRes.rows || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 export async function getSystemSettings(req, res) {
   try {
     const resSettings = await db.query('SELECT * FROM system_settings ORDER BY category, setting_key');

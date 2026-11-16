@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Net;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -22,6 +23,16 @@ namespace NkbDrive.Client.UI
         [STAThread]
         public static void Main(string[] args)
         {
+            try
+            {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | (SecurityProtocolType)12288 | (SecurityProtocolType)3072;
+                ServicePointManager.Expect100Continue = false;
+                ServicePointManager.DefaultConnectionLimit = 50;
+                ServicePointManager.ServerCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true;
+                WebRequest.DefaultWebProxy = null;
+            }
+            catch {}
+
             string logFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NKB Drive", "boot.log");
             try { File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Main entered. Args: " + string.Join(" ", args) + Environment.NewLine); } catch {}
 
