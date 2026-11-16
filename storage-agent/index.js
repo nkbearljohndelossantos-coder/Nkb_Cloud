@@ -1,7 +1,23 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { AgentClient } from './src/agent-client.js';
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Prioritize .env.local in the storage-agent directory, then .env
+const envLocalPath = path.join(__dirname, '.env.local');
+const envPath = path.join(__dirname, '.env');
+
+if (fs.existsSync(envLocalPath)) {
+  dotenv.config({ path: envLocalPath });
+} else if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath });
+} else {
+  dotenv.config();
+}
 
 const config = {
   serverUrl: process.env.NKB_SERVER_URL || 'ws://localhost:5000/ws/agent',

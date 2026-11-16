@@ -9,7 +9,6 @@ const svc = new Service({
   name: 'NKBCloudStorageAgent',
   description: 'NKB Cloud Background Storage Service for Local HDDs & SSDs',
   script: path.join(__dirname, 'index.js'),
-  nodeOptions: ['--harmony'],
   wait: 2,
   grow: .5
 });
