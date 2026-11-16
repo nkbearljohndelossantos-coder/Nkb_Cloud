@@ -37,6 +37,18 @@ export function AuthProvider({ children }) {
     return userData;
   };
 
+  const register = async (registrationData) => {
+    const res = await api.post('/auth/register', registrationData);
+    const { token: newToken, user: userData } = res.data;
+    if (newToken && userData) {
+      setToken(newToken);
+      setUser(userData);
+      localStorage.setItem('nkb_token', newToken);
+      localStorage.setItem('nkb_user', JSON.stringify(userData));
+    }
+    return res.data;
+  };
+
   const logout = () => {
     setUser(null);
     setToken(null);
@@ -45,7 +57,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, loading, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{ user, token, login, register, logout, loading, isAuthenticated: !!user }}>
       {children}
     </AuthContext.Provider>
   );

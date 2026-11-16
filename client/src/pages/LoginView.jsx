@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { Cloud, Lock, Mail, ShieldAlert, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Cloud, Lock, Mail, ShieldAlert, ArrowRight, UserPlus } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import RegisterView from './RegisterView';
 
 export default function LoginView() {
   const { login } = useAuth();
@@ -8,6 +9,31 @@ export default function LoginView() {
   const [password, setPassword] = useState('Admin@NKB2026!');
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
+  const [inviteToken, setInviteToken] = useState('');
+
+  // Check if URL has token / invite param on load
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const tokenParam = urlParams.get('token') || urlParams.get('invite') || '';
+    if (tokenParam || window.location.pathname.includes('/register')) {
+      setInviteToken(tokenParam);
+      setIsRegisterMode(true);
+    }
+  }, []);
+
+  if (isRegisterMode) {
+    return (
+      <RegisterView
+        initialToken={inviteToken}
+        onBackToLogin={() => {
+          setIsRegisterMode(false);
+          // Clean URL param without page reload
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }}
+      />
+    );
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -88,9 +114,17 @@ export default function LoginView() {
             </div>
           </form>
 
-          <div className="mt-6 pt-5 border-t border-slate-100 text-center">
+          <div className="mt-6 pt-5 border-t border-slate-100 text-center space-y-2">
+            <button
+              type="button"
+              onClick={() => setIsRegisterMode(true)}
+              className="inline-flex items-center space-x-1.5 text-xs text-nkb-gold-600 hover:text-nkb-gold-700 font-bold transition"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>Have an invite link? Register here</span>
+            </button>
             <p className="text-[11px] text-slate-500">
-              Default Super Admin credentials are pre-filled for first login.
+              Registration requires an invitation link from your NKB Administrator.
             </p>
           </div>
         </div>

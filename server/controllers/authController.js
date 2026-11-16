@@ -159,3 +159,206 @@ export async function changePassword(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export async function getInviteDetails(req, res) {
+  try {
+    const { token } = req.params;
+    if (!token) {
+      return res.status(400).json({ error: 'Invite token is required' });
+    }
+
+    const inviteRes = await db.query(
+      `SELECT ui.id, ui.token, ui.role_id, ui.department_id, ui.note, ui.max_uses, ui.used_count,
+              ui.expires_at, ui.is_active,
+              r.name as role_name,
+              d.name as department_name, d.code as department_code
+       FROM user_invites ui
+       JOIN roles r ON ui.role_id = r.id
+       LEFT JOIN departments d ON ui.department_id = d.id
+       WHERE ui.token = $1`,
+      [token.trim()]
+    );
+
+    if (!inviteRes.rows || inviteRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Invalid invitation link. Please request a new invite from your administrator.' });
+    }
+
+    const invite = inviteRes.rows[0];
+
+    if (!invite.is_active) {
+      return res.status(410).json({ error: 'This invitation link has been revoked or deactivated.' });
+    }
+
+    if (invite.max_uses && invite.used_count >= invite.max_uses) {
+      return res.status(410).json({ error: 'This invitation link has reached its maximum allowable registrations.' });
+    }
+
+    if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
+      return res.status(410).json({ error: 'This invitation link has expired. Please ask your administrator to send a new one.' });
+    }
+
+    res.json({
+      valid: true,
+      token: invite.token,
+      roleId: invite.role_id,
+      roleName: invite.role_name,
+      departmentId: invite.department_id,
+      departmentName: invite.department_name || 'Unassigned',
+      departmentCode: invite.department_code,
+      note: invite.note,
+      expiresAt: invite.expires_at
+    });
+  } catch (err) {
+    console.error('[AUTH CONTROLLER] getInviteDetails error:', err);
+    res.status(500).json({ error: 'Failed to validate invitation token' });
+  }
+}
+
+export async function registerWithInvite(req, res) {
+  try {
+    const { token, username, email, fullName, password } = req.body;
+
+    if (!token || !username || !email || !fullName || !password) {
+      return res.status(400).json({ error: 'All fields (token, username, email, full name, and password) are required.' });
+    }
+
+    const cleanUsername = username.toLowerCase().trim();
+    const cleanEmail = email.toLowerCase().trim();
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    // Lock invite record for atomic validation & use
+    const inviteRes = await db.query(
+      `SELECT ui.id, ui.token, ui.role_id, ui.department_id, ui.note, ui.max_uses, ui.used_count,
+              ui.expires_at, ui.is_active,
+              r.name as role_name,
+              d.name as department_name, d.code as department_code
+       FROM user_invites ui
+       JOIN roles r ON ui.role_id = r.id
+       LEFT JOIN departments d ON ui.department_id = d.id
+       WHERE ui.token = $1
+       FOR UPDATE`,
+      [token.trim()]
+    );
+
+    if (!inviteRes.rows || inviteRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Invalid invitation link.' });
+    }
+
+    const invite = inviteRes.rows[0];
+
+    if (!invite.is_active) {
+      return res.status(410).json({ error: 'This invitation link has been revoked or deactivated.' });
+    }
+
+    if (invite.max_uses && invite.used_count >= invite.max_uses) {
+      return res.status(410).json({ error: 'This invitation link has reached its maximum allowable registrations.' });
+    }
+
+    if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
+      return res.status(410).json({ error: 'This invitation link has expired.' });
+    }
+
+    // Check username and email availability
+    const existing = await db.query(
+      'SELECT id, username, email FROM users WHERE username = $1 OR email = $2',
+      [cleanUsername, cleanEmail]
+    );
+
+    if (existing.rows && existing.rows.length > 0) {
+      const match = existing.rows[0];
+      if (match.username === cleanUsername) {
+        return res.status(400).json({ error: 'This username is already taken. Please choose another.' });
+      }
+      return res.status(400).json({ error: 'This work email is already registered.' });
+    }
+
+    // Create user with Admin-preset department and role
+    const salt = bcrypt.genSaltSync(10);
+    const passwordHash = bcrypt.hashSync(password, salt);
+    const quotaBytes = 100 * 1024 * 1024 * 1024; // 100GB standard quota
+    const newUserId = (await db.query('SELECT gen_random_uuid() as id')).rows[0].id;
+
+    const userInsert = await db.query(
+      `INSERT INTO users (id, username, email, password_hash, full_name, role_id, department_id, status, storage_quota_bytes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8)
+       RETURNING id, username, email, full_name, role_id, department_id, status, storage_quota_bytes, used_storage_bytes, created_at`,
+      [
+        newUserId,
+        cleanUsername,
+        cleanEmail,
+        passwordHash,
+        fullName.trim(),
+        invite.role_id,
+        invite.department_id,
+        quotaBytes
+      ]
+    );
+
+    const newUser = userInsert.rows[0];
+
+    // Increment invite usage
+    const newUsedCount = invite.used_count + 1;
+    const shouldDeactivate = invite.max_uses ? newUsedCount >= invite.max_uses : false;
+
+    await db.query(
+      `UPDATE user_invites
+       SET used_count = $1, is_active = CASE WHEN $2 = TRUE THEN FALSE ELSE is_active END, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3`,
+      [newUsedCount, shouldDeactivate, invite.id]
+    );
+
+    // Audit log
+    const clientIp = getClientIp(req);
+    await db.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, ip_address, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        newUser.id,
+        'USER_REGISTERED_VIA_INVITE',
+        'USER',
+        newUser.id,
+        clientIp,
+        JSON.stringify({
+          inviteToken: token,
+          role: invite.role_name,
+          department: invite.department_name || 'Unassigned',
+          registeredAt: new Date().toISOString()
+        })
+      ]
+    );
+
+    // Issue JWT token for immediate seamless login
+    const jwtToken = signToken({
+      id: newUser.id,
+      email: newUser.email,
+      username: newUser.username,
+      role: invite.role_name,
+      sessionVersion: 1
+    });
+
+    res.status(201).json({
+      message: 'Account registered successfully',
+      token: jwtToken,
+      user: {
+        id: newUser.id,
+        username: newUser.username,
+        email: newUser.email,
+        fullName: newUser.full_name,
+        role: invite.role_name,
+        roleId: newUser.role_id,
+        department: invite.department_name || null,
+        departmentCode: invite.department_code || null,
+        storageQuotaBytes: Number(newUser.storage_quota_bytes),
+        usedStorageBytes: Number(newUser.used_storage_bytes),
+        isOutsideCompany: false,
+        clientIp
+      }
+    });
+  } catch (err) {
+    console.error('[AUTH CONTROLLER] registerWithInvite error:', err);
+    res.status(500).json({ error: 'Registration failed. ' + err.message });
+  }
+}

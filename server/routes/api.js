@@ -18,6 +18,8 @@ const upload = multer({
 router.post('/auth/login', authCtrl.login);
 router.get('/auth/me', authenticateToken, authCtrl.getCurrentUser);
 router.put('/auth/change-password', authenticateToken, authCtrl.changePassword);
+router.get('/auth/invite/:token', authCtrl.getInviteDetails);
+router.post('/auth/register', authCtrl.registerWithInvite);
 
 // File Explorer & Storage Operations
 router.get('/files', authenticateToken, fileCtrl.getExplorerItems);
@@ -93,6 +95,10 @@ router.get('/users/shareable', authenticateToken, adminCtrl.getShareableUsers);
 router.get('/admin/users', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.getUsers);
 router.post('/admin/users', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.createUser);
 router.put('/admin/users/:id', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.updateUser);
+router.get('/admin/invites', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.getInvites);
+router.post('/admin/invites', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.createInvite);
+router.put('/admin/invites/:id/revoke', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.revokeInvite);
+router.delete('/admin/invites/:id', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.deleteInvite);
 router.get('/admin/audit-logs', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.getAuditLogs);
 router.get('/admin/settings', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.getSystemSettings);
 router.put('/admin/settings/:key', authenticateToken, requireRole('SUPER ADMIN'), adminCtrl.updateSystemSetting);

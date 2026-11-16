@@ -333,3 +333,125 @@ export async function getDeviceAuditHistory(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export async function getInvites(req, res) {
+  try {
+    const invitesRes = await db.query(
+      `SELECT ui.*,
+              r.name as role_name,
+              d.name as department_name, d.code as department_code,
+              u.username as creator_username, u.full_name as creator_full_name
+       FROM user_invites ui
+       JOIN roles r ON ui.role_id = r.id
+       LEFT JOIN departments d ON ui.department_id = d.id
+       LEFT JOIN users u ON ui.created_by = u.id
+       ORDER BY ui.created_at DESC`
+    );
+
+    const rolesRes = await db.query('SELECT * FROM roles ORDER BY id ASC');
+    const deptsRes = await db.query('SELECT * FROM departments ORDER BY name ASC');
+
+    res.json({
+      invites: invitesRes.rows || [],
+      roles: rolesRes.rows || [],
+      departments: deptsRes.rows || []
+    });
+  } catch (err) {
+    console.error('[ADMIN CONTROLLER] getInvites error:', err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function createInvite(req, res) {
+  try {
+    const { roleId, departmentId, maxUses, expiresInDays, note } = req.body;
+
+    if (!roleId) {
+      return res.status(400).json({ error: 'Role is required for generating an invite link' });
+    }
+
+    // Generate high-entropy secure token (32 bytes = 64 hex chars)
+    const token = crypto.randomBytes(32).toString('hex');
+
+    let expiresAt = null;
+    const days = parseInt(expiresInDays);
+    if (!isNaN(days) && days > 0) {
+      expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    }
+
+    const maxUsesVal = maxUses !== undefined && maxUses !== '' && maxUses !== null ? parseInt(maxUses) : 1;
+
+    const insertRes = await db.query(
+      `INSERT INTO user_invites (token, role_id, department_id, created_by, note, max_uses, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [
+        token,
+        parseInt(roleId),
+        departmentId ? parseInt(departmentId) : null,
+        req.user.id,
+        note ? note.trim() : null,
+        maxUsesVal,
+        expiresAt
+      ]
+    );
+
+    const invite = insertRes.rows[0];
+
+    const roleRes = await db.query('SELECT name FROM roles WHERE id = $1', [invite.role_id]);
+    const deptRes = invite.department_id ? await db.query('SELECT name FROM departments WHERE id = $1', [invite.department_id]) : { rows: [] };
+
+    await db.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        req.user.id,
+        'INVITE_LINK_CREATED',
+        'INVITE',
+        invite.id,
+        JSON.stringify({
+          role: roleRes.rows[0]?.name,
+          department: deptRes.rows[0]?.name || 'Unassigned',
+          maxUses: invite.max_uses,
+          expiresAt: invite.expires_at,
+          note: invite.note
+        })
+      ]
+    );
+
+    res.status(201).json({
+      message: 'Invitation link generated successfully',
+      invite: {
+        ...invite,
+        role_name: roleRes.rows[0]?.name,
+        department_name: deptRes.rows[0]?.name || 'Unassigned'
+      }
+    });
+  } catch (err) {
+    console.error('[ADMIN CONTROLLER] createInvite error:', err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function revokeInvite(req, res) {
+  try {
+    const { id } = req.params;
+    await db.query(
+      'UPDATE user_invites SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [id]
+    );
+    res.json({ message: 'Invitation link revoked successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function deleteInvite(req, res) {
+  try {
+    const { id } = req.params;
+    await db.query('DELETE FROM user_invites WHERE id = $1', [id]);
+    res.json({ message: 'Invitation link deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
