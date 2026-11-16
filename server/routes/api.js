@@ -125,4 +125,8 @@ router.post('/admin/devices/:agentId/reactivate', authenticateToken, requireRole
 router.post('/admin/devices/:agentId/request-update', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.requestAgentUpdate);
 router.get('/admin/devices/:agentId/audit', authenticateToken, requireRole('SUPER ADMIN', 'ADMIN'), adminCtrl.getDeviceAuditHistory);
 
+// Desktop Client Application Downloads
+router.get('/downloads/windows', (req, res) => res.redirect('/downloads/NKBDriveSetup.exe'));
+router.get('/downloads/macos', (req, res) => res.redirect('/downloads/NKBDrive-macOS.zip'));
+
 export default router;

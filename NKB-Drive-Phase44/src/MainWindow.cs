@@ -546,7 +546,7 @@ namespace NkbDrive.Client.UI
             panel.Children.Add(caption);
 
             panel.Children.Add(new TextBlock { Text = "Server Endpoint", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(DarkText), Margin = new Thickness(0, 0, 0, 4) });
-            _loginServerUrl = new TextBox { Text = "http://127.0.0.1:5000", Height = 36, Padding = new Thickness(8, 6, 8, 6), FontSize = 13, Margin = new Thickness(0, 0, 0, 14) };
+            _loginServerUrl = new TextBox { Text = "https://nkbcloud.nkbmanufacturing.com", Height = 36, Padding = new Thickness(8, 6, 8, 6), FontSize = 13, Margin = new Thickness(0, 0, 0, 14) };
             panel.Children.Add(_loginServerUrl);
 
             panel.Children.Add(new TextBlock { Text = "Email / Username", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(DarkText), Margin = new Thickness(0, 0, 0, 4) });
@@ -554,7 +554,7 @@ namespace NkbDrive.Client.UI
             panel.Children.Add(_loginEmail);
 
             panel.Children.Add(new TextBlock { Text = "Password", FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(DarkText), Margin = new Thickness(0, 0, 0, 4) });
-            _loginPassword = new PasswordBox { Password = "TestPassword2026!", Height = 36, Padding = new Thickness(8, 6, 8, 6), FontSize = 13, Margin = new Thickness(0, 0, 0, 14) };
+            _loginPassword = new PasswordBox { Password = "Admin@NKB2026!", Height = 36, Padding = new Thickness(8, 6, 8, 6), FontSize = 13, Margin = new Thickness(0, 0, 0, 14) };
             panel.Children.Add(_loginPassword);
 
             _loginErrorText = new TextBlock
@@ -730,11 +730,12 @@ namespace NkbDrive.Client.UI
                                     {
                                         string name = item["name"].ToString();
                                         string id = item["id"].ToString();
+                                        string path = item.ContainsKey("virtualPath") ? item["virtualPath"].ToString() : "\\" + name;
                                         serverIds.Add(id);
                                         _repo.UpsertFile(new LocalFileRecord
                                         {
                                             FileId = id,
-                                            RelativePath = "\\" + name,
+                                            RelativePath = path,
                                             Name = name,
                                             SizeBytes = 0,
                                             Sha256 = "DIRECTORY",

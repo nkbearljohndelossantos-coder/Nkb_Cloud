@@ -576,13 +576,14 @@ export async function getDriveTree(req, res) {
     const userId = req.user.id;
     const userRole = req.user.role_name || req.user.role || 'STANDARD USER';
     const deptId = req.user.department_id;
+    const isSuperAdmin = (userRole === 'SUPER ADMIN');
 
     // Strict Scope: Only return:
-    // 1. Folders owned by the user (including folders Admin shared/linked to My Drive)
-    // 2. Folders explicitly shared with this Employee (file_shares.shared_with_user_id = userId)
-    // 3. Folders explicitly shared with this user's Department (file_shares.shared_with_department_id = deptId)
-    // 4. User's own Department team drive or company-wide Shared drive (dept 11)
-    // 5. Child folders of any accessible parent folder
+    // 1. Super Admin: full access to organization folders
+    // 2. Folders owned by user
+    // 3. Folders explicitly shared with employee or employee's department
+    // 4. Folders assigned to employee's department
+    // 5. Recursive children of any accessible folder
     const folderQuery = `
       WITH RECURSIVE accessible_folders AS (
         SELECT f.id, f.name, f.parent_id, f.department_id, f.owner_id
@@ -590,16 +591,21 @@ export async function getDriveTree(req, res) {
         LEFT JOIN file_shares s ON s.folder_id = f.id 
           AND s.is_revoked = FALSE 
           AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)
+        LEFT JOIN departments d ON d.id = $2
         WHERE f.is_trashed = FALSE
           AND (
-            -- User's own folders (from My Drive or created by user)
-            (f.owner_id = $1 AND f.is_shared_drive = FALSE)
-            -- Folders explicitly shared with this specific employee
+            -- Super Admin: all root folders
+            ($3 = TRUE AND f.parent_id IS NULL)
+            -- User's own root folders
+            OR (f.owner_id = $1 AND f.parent_id IS NULL)
+            -- Explicit user share
             OR s.shared_with_user_id = $1
-            -- Folders explicitly shared with user's department
+            -- Explicit department share
             OR (s.shared_with_department_id IS NOT NULL AND s.shared_with_department_id = $2)
-            -- User's own department drive or company shared drive
-            OR (f.is_shared_drive = TRUE AND ($2 IS NOT NULL AND (f.department_id = $2 OR f.department_id = 11)))
+            -- Assigned department
+            OR ($2 IS NOT NULL AND f.department_id = $2 AND f.parent_id IS NULL)
+            -- Department name match (e.g. Marketing)
+            OR ($2 IS NOT NULL AND d.name IS NOT NULL AND LOWER(f.name) = LOWER(d.name) AND f.parent_id IS NULL)
           )
         UNION
         SELECT c.id, c.name, c.parent_id, c.department_id, c.owner_id
@@ -612,11 +618,11 @@ export async function getDriveTree(req, res) {
       ORDER BY name ASC;
     `;
 
-    const folderRes = await db.query(folderQuery, [userId, deptId]);
+    const folderRes = await db.query(folderQuery, [userId, deptId, isSuperAdmin]);
     const accessibleFolders = folderRes.rows || [];
     const accessibleFolderIds = accessibleFolders.map(f => f.id);
 
-    // Build virtual paths for files
+    // Build virtual paths for files and folders
     const folderMap = new Map(accessibleFolders.map(f => [f.id, f]));
     const getFolderPath = (folderId) => {
       let current = folderMap.get(folderId);
@@ -638,14 +644,15 @@ export async function getDriveTree(req, res) {
         AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)
       WHERE fil.is_trashed = FALSE
         AND (
-          fil.owner_id = $1
+          ($3 = TRUE)
+          OR fil.owner_id = $1
           OR s.shared_with_user_id = $1
           OR (s.shared_with_department_id IS NOT NULL AND s.shared_with_department_id = $2)
     `;
-    const fileParams = [userId, deptId];
+    const fileParams = [userId, deptId, isSuperAdmin];
 
     if (accessibleFolderIds.length > 0) {
-      fileQuery += ` OR fil.folder_id = ANY($3::uuid[])`;
+      fileQuery += ` OR fil.folder_id = ANY($4::uuid[])`;
       fileParams.push(accessibleFolderIds);
     }
     fileQuery += `) ORDER BY fil.name ASC;`;
@@ -666,6 +673,7 @@ export async function getDriveTree(req, res) {
       id: f.id,
       name: f.name,
       parentId: f.parent_id,
+      virtualPath: getFolderPath(f.id),
       departmentId: f.department_id,
       permission: f.owner_id === userId ? 'OWNER' : 'READ_WRITE'
     }));

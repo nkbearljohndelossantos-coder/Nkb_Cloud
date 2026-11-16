@@ -10,11 +10,13 @@ import {
   AlertTriangle,
   RefreshCw,
   HelpCircle,
-  Menu
+  Menu,
+  Download,
+  HardDrive
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
-export default function Topbar({ searchQuery, setSearchQuery, onRefresh, agentConnected, storageOverview, onToggleMobileMenu }) {
+export default function Topbar({ searchQuery, setSearchQuery, onRefresh, agentConnected, storageOverview, onToggleMobileMenu, onOpenDownloadModal }) {
   const { user, logout } = useAuth();
   const [profileOpen, setProfileOpen] = useState(false);
 
@@ -70,6 +72,16 @@ export default function Topbar({ searchQuery, setSearchQuery, onRefresh, agentCo
             </>
           )}
         </div>
+
+        {/* Download Desktop App Button */}
+        <button
+          onClick={onOpenDownloadModal}
+          title="Download NKB Drive App (Windows & Mac)"
+          className="hidden sm:flex items-center space-x-1.5 px-3 py-1.5 bg-nkb-gold-50 hover:bg-nkb-gold-100/80 text-nkb-navy-950 border border-nkb-gold-300 rounded text-xs font-semibold shadow-xs transition"
+        >
+          <Download className="w-3.5 h-3.5 text-nkb-gold-600" />
+          <span>Download App</span>
+        </button>
 
         {/* Refresh Button */}
         <button

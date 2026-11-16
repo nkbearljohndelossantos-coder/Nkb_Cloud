@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Cloud, Lock, Mail, ShieldAlert, ArrowRight, UserPlus } from 'lucide-react';
+import { Cloud, Lock, Mail, ShieldAlert, ArrowRight, UserPlus, Monitor, Laptop, Download, HardDrive } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import RegisterView from './RegisterView';
 
@@ -126,6 +126,35 @@ export default function LoginView() {
             <p className="text-[11px] text-slate-500">
               Registration requires an invitation link from your NKB Administrator.
             </p>
+          </div>
+        </div>
+
+        {/* NKB Drive Desktop Client Downloads */}
+        <div className="mt-6 p-4 bg-slate-800/80 rounded-lg border border-slate-700 text-center shadow-lg">
+          <div className="flex items-center justify-center space-x-2 text-xs font-semibold text-slate-200 mb-2">
+            <HardDrive className="w-4 h-4 text-nkb-gold-400" />
+            <span>Download NKB Drive App (N:)</span>
+          </div>
+          <p className="text-[11px] text-slate-400 mb-3">
+            Mount your company storage directly in Windows Explorer or macOS Finder
+          </p>
+          <div className="flex items-center justify-center gap-3">
+            <a
+              href="/downloads/NKBDriveSetup.exe"
+              download="NKBDriveSetup.exe"
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-nkb-navy-900 hover:bg-nkb-navy-800 text-white border border-nkb-gold-500/50 hover:border-nkb-gold-400 rounded text-xs font-semibold shadow transition"
+            >
+              <Monitor className="w-3.5 h-3.5 text-nkb-gold-400" />
+              <span>Windows App (.exe)</span>
+            </a>
+            <a
+              href="/downloads/NKBDrive-macOS.zip"
+              download="NKBDrive-macOS.zip"
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white border border-slate-600 hover:border-slate-400 rounded text-xs font-semibold shadow transition"
+            >
+              <Laptop className="w-3.5 h-3.5 text-purple-400" />
+              <span>macOS App (.zip)</span>
+            </a>
           </div>
         </div>
       </div>

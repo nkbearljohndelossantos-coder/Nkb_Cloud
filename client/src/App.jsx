@@ -14,6 +14,7 @@ import FilePreviewModal from './components/FilePreviewModal';
 import ShareModal from './components/ShareModal';
 import FileDetailsDrawer from './components/FileDetailsDrawer';
 import AgentOnboardingModal from './components/AgentOnboardingModal';
+import DownloadAppModal from './components/DownloadAppModal';
 import api from './api/client';
 
 export default function App() {
@@ -41,6 +42,7 @@ export default function App() {
   const [shareItem, setShareItem] = useState(null);
   const [selectedFileDetails, setSelectedFileDetails] = useState(null);
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [deviceStatus, setDeviceStatus] = useState(null);
 
   // Check employee device agent status & trigger onboarding if uninstalled
@@ -155,6 +157,7 @@ export default function App() {
         storageOverview={storageOverview}
         isOpen={mobileMenuOpen}
         onClose={() => setMobileMenuOpen(false)}
+        onOpenDownloadModal={() => setShowDownloadModal(true)}
       />
 
       {/* Main Content Area */}
@@ -167,6 +170,7 @@ export default function App() {
           agentConnected={agentConnected}
           storageOverview={storageOverview}
           onToggleMobileMenu={() => setMobileMenuOpen(prev => !prev)}
+          onOpenDownloadModal={() => setShowDownloadModal(true)}
         />
 
         {/* Dynamic Main Workspace View */}
@@ -258,6 +262,12 @@ export default function App() {
           await checkDeviceStatus();
           await fetchStorageData();
         }}
+      />
+
+      {/* Desktop App Download Modal */}
+      <DownloadAppModal
+        isOpen={showDownloadModal}
+        onClose={() => setShowDownloadModal(false)}
       />
     </div>
   );

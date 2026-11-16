@@ -20,6 +20,7 @@ import {
   FolderOpen,
   Compass,
   Laptop,
+  Download,
   X
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -32,7 +33,8 @@ export default function Sidebar({
   setCurrentCategory,
   storageOverview,
   isOpen = false,
-  onClose
+  onClose,
+  onOpenDownloadModal
 }) {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === 'SUPER ADMIN';
@@ -249,6 +251,20 @@ export default function Sidebar({
             )}
           </div>
         )}
+      </div>
+
+      {/* Desktop App Download Action */}
+      <div className="p-3 border-t border-nkb-navy-800 bg-nkb-navy-950/60">
+        <button
+          onClick={() => {
+            if (onOpenDownloadModal) onOpenDownloadModal();
+            if (onClose) onClose();
+          }}
+          className="w-full flex items-center justify-center space-x-2 px-3 py-2 bg-gradient-to-r from-nkb-gold-500 to-amber-600 hover:from-nkb-gold-600 hover:to-amber-700 text-nkb-navy-950 font-bold rounded-lg text-xs shadow-md transition-all active:scale-[0.98]"
+        >
+          <Download className="w-3.5 h-3.5" />
+          <span>Download NKB Drive App</span>
+        </button>
       </div>
     </aside>
     </>

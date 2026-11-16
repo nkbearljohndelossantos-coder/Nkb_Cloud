@@ -134,7 +134,7 @@ namespace NkbDrive.Client
                                     if (dir != null)
                                     {
                                         string name = dir["name"].ToString();
-                                        string path = "\\" + name;
+                                        string path = dir.ContainsKey("virtualPath") ? dir["virtualPath"].ToString() : "\\" + name;
                                         _repo.UpsertFile(new LocalFileRecord
                                         {
                                             FileId = dir["id"].ToString(),
