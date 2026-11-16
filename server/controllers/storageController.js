@@ -3,6 +3,7 @@ import path from 'path';
 import db from '../config/db.js';
 import agentHub from '../services/agentHub.js';
 import crypto from 'crypto';
+import { detectCategory } from './fileController.js';
 
 // 1. Get Storage Overview & Policies
 export async function getStorageOverview(req, res) {
@@ -817,16 +818,16 @@ export async function linkVolumeFolderToCloud(req, res) {
     // Automatically scan & recursively index physical subfolders & files so all nested contents are visible in My Drive
     try {
       const indexFolderRecursively = async (parentFolderId, dirRelativePath, depth = 0) => {
-        if (depth > 8) return; // Prevent runaway recursion
+        if (depth > 12) return; // Prevent runaway recursion
         const browseResult = await agentHub.browseVolumeDirectory(volumeId, {
           relativePath: dirRelativePath,
-          limit: 100
+          limit: 5000
         });
         if (!browseResult || !browseResult.items) return;
 
         for (const item of browseResult.items) {
           const itemNameLower = item.name.toLowerCase();
-          // Skip hidden system files like desktop.ini, thumbs.db, dotfiles
+          // Skip hidden system files like desktop.ini, thumbs.db, dotfiles, recycle bin
           if (
             itemNameLower.includes('desktop.ini') ||
             itemNameLower.includes('thumbs.db') ||
@@ -864,11 +865,31 @@ export async function linkVolumeFolderToCloud(req, res) {
             );
             if (!fileCheck.rows || fileCheck.rows.length === 0) {
               const fileId = crypto.randomUUID();
-              const ext = item.name.includes('.') ? item.name.split('.').pop().toLowerCase() : '';
+              const ext = (item.extension || (item.name.includes('.') ? item.name.split('.').pop() : '')).replace('.', '').toLowerCase();
+              const mimeType = item.mimeType || 'application/octet-stream';
+              const category = detectCategory(mimeType, ext);
+              const sha256 = item.sha256 || crypto.createHash('sha256').update(volumeId + ':' + item.relativePath + ':' + (item.size || 0)).digest('hex');
+              const sizeBytes = BigInt(item.size || 0);
+
               await db.query(
-                `INSERT INTO files (id, folder_id, owner_id, name, original_name, extension, size_bytes, storage_volume_id, relative_path, status, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, 'AVAILABLE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-                [fileId, parentFolderId, req.user.id, item.name, ext, BigInt(item.size || 0), volumeId, item.relativePath]
+                `INSERT INTO files (
+                  id, folder_id, owner_id, name, original_name, mime_type, extension, 
+                  size_bytes, category, storage_volume_id, relative_path, current_version_num, status, sha256_hash, 
+                  created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, 1, 'AVAILABLE', $11, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                [
+                  fileId,
+                  parentFolderId,
+                  req.user.id,
+                  item.name,
+                  mimeType,
+                  ext,
+                  sizeBytes.toString(),
+                  category,
+                  volumeId,
+                  item.relativePath,
+                  sha256
+                ]
               );
             }
           }
@@ -877,7 +898,7 @@ export async function linkVolumeFolderToCloud(req, res) {
 
       await indexFolderRecursively(folder.id, relativePath || cleanName, 0);
     } catch (scanErr) {
-      console.log('[LINK FOLDER] Recursive indexing notice:', scanErr.message);
+      console.error('[LINK FOLDER] Recursive indexing notice / error:', scanErr);
     }
 
     res.json({
