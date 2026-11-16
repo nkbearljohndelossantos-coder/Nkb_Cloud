@@ -239,7 +239,7 @@ export async function registerWithInvite(req, res) {
        JOIN roles r ON ui.role_id = r.id
        LEFT JOIN departments d ON ui.department_id = d.id
        WHERE ui.token = $1
-       FOR UPDATE`,
+       FOR UPDATE OF ui`,
       [token.trim()]
     );
 
