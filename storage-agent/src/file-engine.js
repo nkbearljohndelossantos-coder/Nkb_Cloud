@@ -225,10 +225,16 @@ export class FileStorageEngine {
   // Range reading supporting high-performance streaming slices
   async readChunk({ mountPath, relativePath, startByte = 0, length }) {
     this.registerAllowlistedRoot(mountPath);
-    const targetPath = this.resolveSafePath(mountPath, relativePath);
+    let targetPath = this.resolveSafePath(mountPath, relativePath);
 
     if (!fs.existsSync(targetPath)) {
-      throw new Error(`File not found: ${relativePath}`);
+      // Fallback: check in NKB_Storage_Root if not found at volume root
+      const fallbackPath = path.join(mountPath, 'NKB_Storage_Root', relativePath);
+      if (fs.existsSync(fallbackPath)) {
+        targetPath = fallbackPath;
+      } else {
+        throw new Error(`File not found: ${relativePath}`);
+      }
     }
 
     const stat = fs.statSync(targetPath);

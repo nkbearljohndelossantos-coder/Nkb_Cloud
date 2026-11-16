@@ -829,12 +829,19 @@ class StorageAgentHub {
     }
 
     const devRes = await db.query('SELECT agent_id FROM storage_devices WHERE id = $1', [volume.device_id]);
-    const agentId = devRes.rows[0]?.agent_id;
+    let agentId = devRes.rows[0]?.agent_id;
+    if (!agentId || !this.isAgentConnected(agentId)) {
+      const fallbackAgent = this.getFirstConnectedAgentId();
+      if (fallbackAgent) agentId = fallbackAgent;
+    }
     const agentSession = this.agents.get(agentId);
 
     if (!agentSession || !agentSession.authenticated) {
       throw new Error(`Storage Agent for drive "${volume.assigned_name}" is currently offline`);
     }
+
+    const hasLetter = volume.current_drive_letter && volume.current_drive_letter.trim() !== '' && volume.current_drive_letter.toUpperCase() !== 'C:';
+    const volumeRoot = hasLetter ? `${volume.current_drive_letter}\\` : volume.mount_path;
 
     // Direct Binary WebSocket Frame if chunkData is a Buffer (0% Base64 overhead)
     if (Buffer.isBuffer(chunkData)) {
@@ -843,7 +850,7 @@ class StorageAgentHub {
       const headerObj = {
         commandId,
         idempotencyKey,
-        mountPath: volume.mount_path,
+        mountPath: volumeRoot,
         relativePath,
         chunkIndex,
         isLastChunk,
@@ -871,7 +878,7 @@ class StorageAgentHub {
 
     // Fallback for string/Base64 chunk data
     return await this.dispatchCommand(agentId, 'WRITE_CHUNK_STREAM', {
-      mountPath: volume.mount_path,
+      mountPath: volumeRoot,
       relativePath,
       chunkIndex,
       chunkBase64: chunkData,
@@ -888,10 +895,17 @@ class StorageAgentHub {
     }
 
     const devRes = await db.query('SELECT agent_id FROM storage_devices WHERE id = $1', [volume.device_id]);
-    const agentId = devRes.rows[0]?.agent_id;
+    let agentId = devRes.rows[0]?.agent_id;
+    if (!agentId || !this.isAgentConnected(agentId)) {
+      const fallbackAgent = this.getFirstConnectedAgentId();
+      if (fallbackAgent) agentId = fallbackAgent;
+    }
+
+    const hasLetter = volume.current_drive_letter && volume.current_drive_letter.trim() !== '' && volume.current_drive_letter.toUpperCase() !== 'C:';
+    const volumeRoot = hasLetter ? `${volume.current_drive_letter}\\` : volume.mount_path;
 
     const result = await this.dispatchCommand(agentId, 'READ_CHUNK', {
-      mountPath: volume.mount_path,
+      mountPath: volumeRoot,
       relativePath,
       startByte,
       length

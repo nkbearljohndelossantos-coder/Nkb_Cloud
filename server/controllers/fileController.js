@@ -470,6 +470,27 @@ export async function getUploadSessionStatus(req, res) {
   }
 }
 
+export async function resolveRelativeStoragePath(session) {
+  let folderPath = '';
+  if (session.target_folder_id) {
+    const parts = [];
+    let currId = session.target_folder_id;
+    let depth = 0;
+    while (currId && depth < 20) {
+      const res = await db.query('SELECT id, name, parent_id FROM folders WHERE id = $1', [currId]);
+      if (!res.rows || !res.rows[0]) break;
+      const f = res.rows[0];
+      parts.unshift(f.name);
+      currId = f.parent_id;
+      depth++;
+    }
+    folderPath = parts.join('/');
+  }
+
+  const cleanFileName = path.basename(session.file_name);
+  return folderPath ? `${folderPath}/${cleanFileName}` : cleanFileName;
+}
+
 // 5. Upload Chunk (Idempotent write)
 export async function uploadChunk(req, res) {
   try {
@@ -532,7 +553,7 @@ export async function uploadChunk(req, res) {
     }
 
     const ext = path.extname(session.file_name);
-    const relativeStoragePath = `${session.id}${ext}`;
+    const relativeStoragePath = await resolveRelativeStoragePath(session);
 
     // Write chunk to physical storage via agent or local mount
     if (agentHub.hasConnectedAgent()) {
@@ -589,7 +610,7 @@ export async function finalizeUpload(req, res) {
       });
     }
     const ext = path.extname(session.file_name);
-    const relativeStoragePath = `${session.id}${ext}`;
+    const relativeStoragePath = await resolveRelativeStoragePath(session);
     const category = detectCategory('', ext);
 
     // Compute or verify SHA-256
@@ -693,7 +714,23 @@ export async function directUpload(req, res) {
     const volume = eligibleVols[0];
 
     const fileId = crypto.randomUUID();
-    const relativeStoragePath = `${fileId}${ext}`;
+    let folderPath = '';
+    if (folderId) {
+      const parts = [];
+      let currId = folderId;
+      let depth = 0;
+      while (currId && depth < 20) {
+        const res = await db.query('SELECT id, name, parent_id FROM folders WHERE id = $1', [currId]);
+        if (!res.rows || !res.rows[0]) break;
+        const f = res.rows[0];
+        parts.unshift(f.name);
+        currId = f.parent_id;
+        depth++;
+      }
+      folderPath = parts.join('/');
+    }
+    const cleanFileName = path.basename(originalname);
+    const relativeStoragePath = folderPath ? `${folderPath}/${cleanFileName}` : cleanFileName;
     const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
 
     if (agentHub.hasConnectedAgent()) {
