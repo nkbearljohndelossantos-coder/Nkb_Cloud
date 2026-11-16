@@ -458,11 +458,16 @@ namespace NkbDrive.Installer
                     CreateShortcut(Path.Combine(desktopDir, "NKB Drive.lnk"), exeTarget, "NKB Drive Enterprise Cloud Storage");
                 }
 
-                // Startup Registry
+                // Startup Registry & Startup Folder
                 UpdateProgress("Registering Windows Startup...", 85);
                 if (_chkStartup != null && _chkStartup.Checked)
                 {
                     SetStartupRegistry(exeTarget, true);
+                    string startupDir = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
+                    if (Directory.Exists(startupDir))
+                    {
+                        CreateShortcut(Path.Combine(startupDir, "NKB Drive.lnk"), exeTarget, "NKB Drive Enterprise Cloud Storage", "--startup");
+                    }
                 }
 
                 // Windows Add/Remove Programs Registration
@@ -532,6 +537,11 @@ namespace NkbDrive.Installer
             {
                 Console.WriteLine("[INSTALL] Registering Run on startup...");
                 SetStartupRegistry(exeTarget, true);
+                string startupDir = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
+                if (Directory.Exists(startupDir))
+                {
+                    CreateShortcut(Path.Combine(startupDir, "NKB Drive.lnk"), exeTarget, "NKB Drive Enterprise Cloud Storage", "--startup");
+                }
             }
 
             Console.WriteLine("[INSTALL] Registering in Windows Add/Remove Programs & Drive Icon...");
@@ -581,6 +591,12 @@ namespace NkbDrive.Installer
             if (File.Exists(desktopShortcut))
             {
                 try { File.Delete(desktopShortcut); } catch {}
+            }
+
+            string startupShortcut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "NKB Drive.lnk");
+            if (File.Exists(startupShortcut))
+            {
+                try { File.Delete(startupShortcut); } catch {}
             }
 
             Console.WriteLine("[UNINSTALL] Removing Windows Add/Remove Programs entry...");

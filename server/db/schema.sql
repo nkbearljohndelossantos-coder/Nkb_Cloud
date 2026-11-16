@@ -426,7 +426,7 @@ CREATE TABLE IF NOT EXISTS file_shares (
     shared_with_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     shared_with_department_id INT REFERENCES departments(id) ON DELETE CASCADE,
     share_token VARCHAR(128) UNIQUE,
-    permission_level VARCHAR(20) NOT NULL DEFAULT 'VIEW' CHECK (permission_level IN ('VIEW', 'EDIT', 'DOWNLOAD_ONLY')),
+    permission_level VARCHAR(20) NOT NULL DEFAULT 'VIEWER' CHECK (permission_level IN ('VIEW', 'EDIT', 'DOWNLOAD_ONLY', 'VIEWER', 'EDITOR', 'CONTRIBUTOR', 'DOWNLOADER')),
     allow_download BOOLEAN DEFAULT TRUE,
     password_hash VARCHAR(255),
     expires_at TIMESTAMP WITH TIME ZONE,

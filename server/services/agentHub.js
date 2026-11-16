@@ -213,6 +213,7 @@ class StorageAgentHub {
     }, 15000);
 
     setInterval(() => this.checkStaleAgents(), 30000);
+    setInterval(() => this.drainFallbackSyncQueue().catch(() => {}), 20000);
     console.log('[AgentHub] Secure Outbound Agent Hub mounted on /ws/agent.');
   }
 
@@ -742,9 +743,12 @@ class StorageAgentHub {
         const volIdList = Array.from(activeVolumeIds);
         await db.query(
           `UPDATE storage_volumes SET status = 'OFFLINE', updated_at = CURRENT_TIMESTAMP
-           WHERE device_id = ANY($1::uuid[]) AND NOT (id = ANY($2::uuid[]))`,
+           WHERE device_id = ANY($1::uuid[]) AND NOT (id = ANY($2::uuid[])) AND id != '00000000-0000-0000-0000-000000000099'`,
           [Array.from(activeDeviceIds), volIdList]
         );
+
+        // Auto-Drain Fallback Queue: external hard disk reconnected!
+        this.drainFallbackSyncQueue(volIdList).catch(err => console.error('[AgentHub] Auto-sync drain error:', err.message));
       }
 
     } catch (err) {
@@ -752,15 +756,166 @@ class StorageAgentHub {
     }
   }
 
+  async drainFallbackSyncQueue(onlineVolumeIds = null) {
+    if (this._isDrainingFallbackQueue) return;
+    this._isDrainingFallbackQueue = true;
+
+    try {
+      if (!this.hasConnectedAgent()) {
+        this._isDrainingFallbackQueue = false;
+        return;
+      }
+
+      // 1. Fetch pending offline-staged files
+      const pendingRes = await db.query(`
+        SELECT f.*, v.mount_path as fallback_mount_path
+        FROM files f
+        LEFT JOIN storage_volumes v ON f.storage_volume_id = v.id
+        WHERE f.needs_agent_sync = TRUE AND f.is_trashed = FALSE
+        ORDER BY f.created_at ASC
+        LIMIT 25
+      `);
+
+      const pendingFiles = pendingRes.rows || [];
+      if (pendingFiles.length === 0) {
+        this._isDrainingFallbackQueue = false;
+        return;
+      }
+
+      // 2. Determine target online volume IDs
+      let eligibleIds = onlineVolumeIds;
+      if (!eligibleIds || eligibleIds.length === 0) {
+        const onlRes = await db.query(`
+          SELECT id FROM storage_volumes 
+          WHERE status = 'ONLINE' AND id != '00000000-0000-0000-0000-000000000099'
+        `);
+        eligibleIds = (onlRes.rows || []).map(r => r.id);
+      }
+
+      if (!eligibleIds || eligibleIds.length === 0) {
+        this._isDrainingFallbackQueue = false;
+        return;
+      }
+
+      // Pick best external drive (prefer J: SSD16 or highest free space)
+      const extVolRes = await db.query(`
+        SELECT id, assigned_name, current_drive_letter 
+        FROM storage_volumes 
+        WHERE id = ANY($1::uuid[]) AND id != '00000000-0000-0000-0000-000000000099'
+        ORDER BY CASE WHEN current_drive_letter = 'J:' THEN 0 WHEN current_drive_letter = 'D:' THEN 1 ELSE 2 END ASC, free_bytes DESC
+        LIMIT 1
+      `, [eligibleIds]);
+
+      const defaultDestVolId = extVolRes.rows[0]?.id;
+      if (!defaultDestVolId) {
+        this._isDrainingFallbackQueue = false;
+        return;
+      }
+
+      console.log(`[AgentHub-Drain] Found ${pendingFiles.length} file(s) waiting for auto-sync to external hard disk...`);
+
+      for (const file of pendingFiles) {
+        try {
+          const destVolId = (file.target_volume_id && eligibleIds.includes(file.target_volume_id))
+            ? file.target_volume_id
+            : defaultDestVolId;
+
+          const fallbackRoot = file.fallback_mount_path || '/opt/nkb-cloud/data/fallback_storage';
+          const localFilePath = path.join(fallbackRoot, file.relative_path);
+
+          if (!fs.existsSync(localFilePath)) {
+            console.warn(`[AgentHub-Drain] Fallback file missing on VPS disk: ${localFilePath}`);
+            await db.query('UPDATE files SET needs_agent_sync = FALSE WHERE id = $1', [file.id]);
+            continue;
+          }
+
+          console.log(`[AgentHub-Drain] Auto-syncing '${file.name}' (${file.size_bytes} bytes) to external volume...`);
+
+          const fileSize = Number(file.size_bytes);
+          const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks
+          const totalChunks = Math.ceil(fileSize / CHUNK_SIZE) || 1;
+
+          const fd = fs.openSync(localFilePath, 'r');
+          const buffer = Buffer.alloc(CHUNK_SIZE);
+          let hashCalculator = crypto.createHash('sha256');
+
+          for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+            const bytesRead = fs.readSync(fd, buffer, 0, CHUNK_SIZE, chunkIdx * CHUNK_SIZE);
+            const chunkSlice = buffer.subarray(0, bytesRead);
+            hashCalculator.update(chunkSlice);
+            const isLastChunk = (chunkIdx === totalChunks - 1);
+            const chunkHash = crypto.createHash('sha256').update(chunkSlice).digest('hex');
+
+            await this.writeChunkToStorage(
+              destVolId,
+              file.relative_path,
+              chunkIdx,
+              chunkSlice,
+              isLastChunk,
+              chunkHash
+            );
+          }
+          fs.closeSync(fd);
+
+          const finalHash = hashCalculator.digest('hex');
+          if (file.sha256_hash && finalHash.toLowerCase() !== file.sha256_hash.toLowerCase()) {
+            console.error(`[AgentHub-Drain] Hash mismatch for '${file.name}' (Calculated: ${finalHash}, Expected: ${file.sha256_hash})`);
+            continue;
+          }
+
+          // Update database file record to point to the external volume
+          await db.query(`
+            UPDATE files 
+            SET storage_volume_id = $1, 
+                needs_agent_sync = FALSE, 
+                fallback_synced_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+          `, [destVolId, file.id]);
+
+          // Update file_versions
+          await db.query(`
+            UPDATE file_versions 
+            SET storage_volume_id = $1 
+            WHERE file_id = $2
+          `, [destVolId, file.id]);
+
+          // Clean up the temporary fallback file on the VPS to conserve server storage
+          try {
+            fs.unlinkSync(localFilePath);
+            console.log(`[AgentHub-Drain] Removed VPS local staging file: ${localFilePath}`);
+          } catch (delErr) {
+            console.warn(`[AgentHub-Drain] Could not remove staging file: ${delErr.message}`);
+          }
+
+          await db.query(
+            `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+             VALUES ($1, 'EXTERNAL_STORAGE_AUTO_SYNC_COMPLETED', 'FILE', $2, $3)`,
+            [file.owner_id, file.id, JSON.stringify({ fileName: file.name, destinationVolumeId: destVolId, sizeBytes: file.size_bytes })]
+          );
+
+          console.log(`[AgentHub-Drain] SUCCESS: '${file.name}' seamlessly migrated to external hard disk!`);
+        } catch (fileSyncErr) {
+          console.error(`[AgentHub-Drain] Error syncing file '${file.name}':`, fileSyncErr.message);
+        }
+      }
+    } catch (err) {
+      console.error('[AgentHub-Drain] Drain queue error:', err.message);
+    } finally {
+      this._isDrainingFallbackQueue = false;
+    }
+  }
+
   async handleAgentDisconnect(agentId) {
     try {
+      if (agentId === '00000000-0000-0000-0000-000000000097') return;
       await db.query(
-        `UPDATE storage_agents SET status = 'OFFLINE' WHERE id = $1 AND status NOT IN ('REVOKED', 'SUSPENDED', 'PENDING')`,
+        `UPDATE storage_agents SET status = 'OFFLINE' WHERE id = $1 AND status NOT IN ('REVOKED', 'SUSPENDED', 'PENDING') AND id != '00000000-0000-0000-0000-000000000097'`,
         [agentId]
       );
       await db.query(
         `UPDATE storage_volumes SET status = 'OFFLINE'
-         WHERE device_id IN (SELECT id FROM storage_devices WHERE agent_id = $1)`,
+         WHERE device_id IN (SELECT id FROM storage_devices WHERE agent_id = $1) AND id != '00000000-0000-0000-0000-000000000099'`,
         [agentId]
       );
     } catch (err) {
@@ -772,7 +927,7 @@ class StorageAgentHub {
     try {
       const timeoutThreshold = new Date(Date.now() - 90000); // Generous 90s window
       const staleAgents = await db.query(
-        `SELECT id FROM storage_agents WHERE status = 'ONLINE' AND last_heartbeat < $1`,
+        `SELECT id FROM storage_agents WHERE status = 'ONLINE' AND id != '00000000-0000-0000-0000-000000000097' AND last_heartbeat < $1`,
         [timeoutThreshold]
       );
 

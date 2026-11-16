@@ -67,8 +67,16 @@ conn.on('ready', () => {
           '/opt/nkb-cloud/server/controllers/fileController.js'
         );
         await uploadFile(
+          path.join(rootDir, 'server', 'controllers', 'shareController.js'),
+          '/opt/nkb-cloud/server/controllers/shareController.js'
+        );
+        await uploadFile(
           path.join(rootDir, 'server', 'controllers', 'driveController.js'),
           '/opt/nkb-cloud/server/controllers/driveController.js'
+        );
+        await uploadFile(
+          path.join(rootDir, 'server', 'services', 'agentHub.js'),
+          '/opt/nkb-cloud/server/services/agentHub.js'
         );
         await uploadFile(
           path.join(rootDir, 'server', 'routes', 'api.js'),
@@ -83,13 +91,16 @@ conn.on('ready', () => {
 
         console.log('[DEPLOY] 3. Executing docker container sync and restart...');
         const remoteCmd = `
+          mkdir -p /opt/nkb-cloud/data/fallback_storage &&
           docker cp /opt/nkb-cloud/server/controllers/adminController.js nkb_cloud_backend:/app/controllers/adminController.js &&
           docker cp /opt/nkb-cloud/server/controllers/fileController.js nkb_cloud_backend:/app/controllers/fileController.js &&
+          docker cp /opt/nkb-cloud/server/controllers/shareController.js nkb_cloud_backend:/app/controllers/shareController.js &&
           docker cp /opt/nkb-cloud/server/controllers/driveController.js nkb_cloud_backend:/app/controllers/driveController.js &&
+          docker cp /opt/nkb-cloud/server/services/agentHub.js nkb_cloud_backend:/app/services/agentHub.js &&
           docker cp /opt/nkb-cloud/server/routes/api.js nkb_cloud_backend:/app/routes/api.js &&
           docker restart nkb_cloud_backend &&
           docker restart nkb_cloud_frontend &&
-          sleep 2 &&
+          sleep 3 &&
           docker ps
         `;
 

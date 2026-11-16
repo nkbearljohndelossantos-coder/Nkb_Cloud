@@ -6,6 +6,9 @@ import agentHub from '../services/agentHub.js';
 import { verifyFolderAccess, verifyFileAccess } from '../services/authorizationService.js';
 import { recordChangeEvent } from './driveController.js';
 
+export const FALLBACK_VOLUME_ID = '00000000-0000-0000-0000-000000000099';
+export const FALLBACK_MOUNT_PATH = '/opt/nkb-cloud/data/fallback_storage';
+
 export function detectCategory(mimeType, ext) {
   const mime = (mimeType || '').toLowerCase();
   const e = (ext || '').toLowerCase().replace('.', '');
@@ -403,9 +406,11 @@ export async function initiateUploadSession(req, res) {
       }
     }
 
+    let intendedVolumeId = targetVolId;
+
     if (targetVolId) {
       // Explicit or folder-inherited placement
-      const volRes = await db.query("SELECT * FROM storage_volumes WHERE id = $1 AND status = 'ONLINE'", [targetVolId]);
+      const volRes = await db.query("SELECT * FROM storage_volumes WHERE id = $1 AND status = 'ONLINE' AND id != $2", [targetVolId, FALLBACK_VOLUME_ID]);
       if (volRes.rows && volRes.rows[0]) {
         selectedVolume = volRes.rows[0];
       }
@@ -413,7 +418,7 @@ export async function initiateUploadSession(req, res) {
 
     if (!selectedVolume) {
       if (policy === 'DEFAULT_DRIVE') {
-        const defRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' ORDER BY created_at ASC");
+        const defRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' AND id != $1 ORDER BY created_at ASC", [FALLBACK_VOLUME_ID]);
         if (defRes.rows && defRes.rows[0]) {
           selectedVolume = defRes.rows[0];
         }
@@ -421,11 +426,27 @@ export async function initiateUploadSession(req, res) {
 
       if (!selectedVolume) {
         // PRIORITY_POOL (or fallback from default): sort by free space DESC, created_at ASC
-        const poolRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' ORDER BY free_bytes DESC, created_at ASC");
+        const poolRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' AND id != $1 ORDER BY free_bytes DESC, created_at ASC", [FALLBACK_VOLUME_ID]);
         const candidates = (poolRes.rows || []).filter(v => BigInt(v.free_bytes || 0) >= BigInt(totalSizeBytes));
         if (candidates.length > 0) {
           selectedVolume = candidates[0];
         }
+      }
+    }
+
+    // RESILIENT OFFLINE/TIERED FALLBACK:
+    // If no external drive is online or Storage Agent is disconnected,
+    // seamlessly fall back to the VPS Resilient Staging Fallback so users can ALWAYS upload!
+    let isFallbackSession = false;
+    if (!selectedVolume || !agentHub.hasConnectedAgent()) {
+      if (selectedVolume) {
+        intendedVolumeId = selectedVolume.id;
+      }
+      const fallbackRes = await db.query("SELECT * FROM storage_volumes WHERE id = $1", [FALLBACK_VOLUME_ID]);
+      if (fallbackRes.rows && fallbackRes.rows[0]) {
+        selectedVolume = fallbackRes.rows[0];
+        isFallbackSession = true;
+        console.log(`[FILE CONTROLLER] External drive or agent is offline. Using VPS Resilient Fallback Storage for '${fileName}' (intended volume: ${intendedVolumeId || 'DEFAULT'})`);
       }
     }
 
@@ -446,9 +467,9 @@ export async function initiateUploadSession(req, res) {
     }
 
     await db.query(
-      `INSERT INTO upload_sessions (id, user_id, target_folder_id, storage_volume_id, file_name, total_size_bytes, total_chunks, expected_sha256, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'IN_PROGRESS')`,
-      [sessionId, req.user.id, pid, selectedVolume.id, fileName, totalSizeBytes, totalChunks, expectedSha256 || null]
+      `INSERT INTO upload_sessions (id, user_id, target_folder_id, storage_volume_id, file_name, total_size_bytes, total_chunks, expected_sha256, status, target_external_volume_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'IN_PROGRESS', $9)`,
+      [sessionId, req.user.id, pid, selectedVolume.id, fileName, totalSizeBytes, totalChunks, expectedSha256 || null, intendedVolumeId || null]
     );
 
     res.json({
@@ -593,7 +614,7 @@ export async function uploadChunk(req, res) {
     const relativeStoragePath = await resolveRelativeStoragePath(session);
 
     // Write chunk to physical storage via agent or local mount
-    if (agentHub.hasConnectedAgent()) {
+    if (session.storage_volume_id !== FALLBACK_VOLUME_ID && agentHub.hasConnectedAgent()) {
       await agentHub.writeChunkToStorage(
         session.storage_volume_id,
         relativeStoragePath,
@@ -604,10 +625,12 @@ export async function uploadChunk(req, res) {
       );
     } else {
       const volRes = await db.query('SELECT * FROM storage_volumes WHERE id = $1', [session.storage_volume_id]);
-      const storageRoot = volRes.rows[0]?.mount_path || path.join(process.cwd(), 'local_storage');
+      const storageRoot = volRes.rows[0]?.mount_path || FALLBACK_MOUNT_PATH;
       if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
 
       const targetPath = path.join(storageRoot, relativeStoragePath);
+      const targetDir = path.dirname(targetPath);
+      if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
       fs.appendFileSync(targetPath, chunkBuffer);
     }
 
@@ -654,7 +677,7 @@ export async function finalizeUpload(req, res) {
     let sha256Hash = session.expected_sha256;
     if (!sha256Hash) {
       const volRes = await db.query('SELECT * FROM storage_volumes WHERE id = $1', [session.storage_volume_id]);
-      const storageRoot = volRes.rows[0]?.mount_path || path.join(process.cwd(), 'local_storage');
+      const storageRoot = volRes.rows[0]?.mount_path || FALLBACK_MOUNT_PATH;
       const targetPath = path.join(storageRoot, relativeStoragePath);
       if (fs.existsSync(targetPath)) {
         const fileBuffer = fs.readFileSync(targetPath);
@@ -664,15 +687,20 @@ export async function finalizeUpload(req, res) {
       }
     }
 
+    const isFallbackFile = (session.storage_volume_id === FALLBACK_VOLUME_ID);
+    const targetExternalVol = session.target_external_volume_id || null;
+
     const fileId = crypto.randomUUID();
     const newFileRes = await db.query(
       `INSERT INTO files (id, folder_id, owner_id, name, original_name, mime_type, extension, size_bytes, category,
-       storage_volume_id, relative_path, current_version_num, status, sha256_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+       storage_volume_id, relative_path, current_version_num, status, sha256_hash, needs_agent_sync, target_volume_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       RETURNING *`,
       [
         fileId, session.target_folder_id, session.user_id, session.file_name, session.file_name,
         'application/octet-stream', ext.replace('.', ''), session.total_size_bytes, category,
-        session.storage_volume_id, relativeStoragePath, 1, 'AVAILABLE', sha256Hash
+        session.storage_volume_id, relativeStoragePath, 1, 'AVAILABLE', sha256Hash,
+        isFallbackFile, targetExternalVol
       ]
     );
 
@@ -740,15 +768,32 @@ export async function directUpload(req, res) {
     const ext = path.extname(originalname);
     const category = detectCategory(mimetype, ext);
 
-    const volRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' ORDER BY created_at ASC");
-    const eligibleVols = (volRes.rows || []).filter(v => BigInt(v.free_bytes || 0) >= BigInt(size));
-    if (eligibleVols.length === 0) {
+    let volume = null;
+    let isFallback = false;
+    let intendedVolId = null;
+
+    if (agentHub.hasConnectedAgent()) {
+      const volRes = await db.query("SELECT * FROM storage_volumes WHERE status = 'ONLINE' AND id != $1 ORDER BY created_at ASC", [FALLBACK_VOLUME_ID]);
+      const eligibleVols = (volRes.rows || []).filter(v => BigInt(v.free_bytes || 0) >= BigInt(size));
+      if (eligibleVols.length > 0) {
+        volume = eligibleVols[0];
+      }
+    }
+
+    if (!volume) {
+      const fallbackRes = await db.query("SELECT * FROM storage_volumes WHERE id = $1", [FALLBACK_VOLUME_ID]);
+      if (fallbackRes.rows && fallbackRes.rows[0]) {
+        volume = fallbackRes.rows[0];
+        isFallback = true;
+      }
+    }
+
+    if (!volume) {
       return res.status(507).json({
         error: 'NO_ACTIVE_STORAGE_VOLUME',
         message: 'No active storage volume with sufficient free space is available.'
       });
     }
-    const volume = eligibleVols[0];
 
     const fileId = crypto.randomUUID();
     let folderPath = '';
@@ -770,22 +815,27 @@ export async function directUpload(req, res) {
     const relativeStoragePath = folderPath ? `${folderPath}/${cleanFileName}` : cleanFileName;
     const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
 
-    if (agentHub.hasConnectedAgent()) {
+    if (!isFallback && agentHub.hasConnectedAgent()) {
       await agentHub.writeChunkToStorage(volume.id, relativeStoragePath, 0, buffer, true, sha256);
     } else {
-      const storageRoot = volume.mount_path || path.join(process.cwd(), 'local_storage');
+      const storageRoot = volume.mount_path || FALLBACK_MOUNT_PATH;
       if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
-      fs.writeFileSync(path.join(storageRoot, relativeStoragePath), buffer);
+      const targetPath = path.join(storageRoot, relativeStoragePath);
+      const targetDir = path.dirname(targetPath);
+      if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+      fs.writeFileSync(targetPath, buffer);
     }
 
     const newFileRes = await db.query(
       `INSERT INTO files (id, folder_id, owner_id, name, original_name, mime_type, extension, size_bytes, category,
-       storage_volume_id, relative_path, current_version_num, status, sha256_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+       storage_volume_id, relative_path, current_version_num, status, sha256_hash, needs_agent_sync, target_volume_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       RETURNING *`,
       [
         fileId, folderId, req.user.id, originalname, originalname,
         mimetype || 'application/octet-stream', ext.replace('.', ''), size, category,
-        volume.id, relativeStoragePath, 1, 'AVAILABLE', sha256
+        volume.id, relativeStoragePath, 1, 'AVAILABLE', sha256,
+        isFallback, intendedVolId
       ]
     );
 
@@ -842,7 +892,9 @@ export async function downloadFile(req, res) {
     const volRes = await db.query('SELECT * FROM storage_volumes WHERE id = $1', [file.storage_volume_id]);
     const volume = volRes.rows[0];
 
-    if (!volume || volume.status !== 'ONLINE') {
+    const isFallbackFile = (file.storage_volume_id === FALLBACK_VOLUME_ID || file.needs_agent_sync);
+
+    if (!isFallbackFile && (!volume || volume.status !== 'ONLINE')) {
       return res.status(503).json({
         error: `File is temporarily UNAVAILABLE: Physical storage drive "${volume ? volume.assigned_name : 'Unknown'}" is currently OFFLINE. No files were deleted. Reconnect the storage drive to resume immediate access.`,
         volumeStatus: 'OFFLINE',
@@ -886,7 +938,7 @@ export async function downloadFile(req, res) {
       res.setHeader('Content-Length', fileSize);
     }
 
-    if (agentHub.hasConnectedAgent()) {
+    if (!isFallbackFile && agentHub.hasConnectedAgent() && volume.id !== FALLBACK_VOLUME_ID) {
       // PERF-01: Bounded streaming for large downloads with stream backpressure
       const SLICE_SIZE = 8 * 1024 * 1024; // 8MB bounded chunks
       if (chunkLength > SLICE_SIZE) {
@@ -914,7 +966,7 @@ export async function downloadFile(req, res) {
         res.send(chunkRes.buffer);
       }
     } else {
-      const storageRoot = volume.mount_path || path.join(process.cwd(), 'local_storage');
+      const storageRoot = volume?.mount_path || FALLBACK_MOUNT_PATH;
       const physicalPath = path.join(storageRoot, file.relative_path);
       if (fs.existsSync(physicalPath)) {
         if (isPartial) {
