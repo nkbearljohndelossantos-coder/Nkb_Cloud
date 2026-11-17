@@ -622,11 +622,52 @@ export async function getDriveTree(req, res) {
     const accessibleFolders = folderRes.rows || [];
     const accessibleFolderIds = accessibleFolders.map(f => f.id);
 
+    // Determine user's department root folder if standard user
+    let deptRootId = null;
+    if (!isSuperAdmin && deptId) {
+      const dr = accessibleFolders.find(f => (f.department_id === deptId || f.name.toLowerCase() === (f.dept_name || '').toLowerCase()) && !f.parent_id);
+      if (dr) {
+        deptRootId = dr.id;
+      } else {
+        const drRes = await db.query(
+          `SELECT id FROM folders 
+           WHERE (department_id = $1 OR LOWER(name) = LOWER((SELECT name FROM departments WHERE id = $1))) 
+             AND parent_id IS NULL AND is_trashed = FALSE 
+           ORDER BY created_at ASC LIMIT 1`,
+          [deptId]
+        );
+        if (drRes.rows && drRes.rows.length > 0) {
+          deptRootId = drRes.rows[0].id;
+        }
+      }
+    }
+
     // Build virtual paths for files and folders
     const folderMap = new Map(accessibleFolders.map(f => [f.id, f]));
     const getFolderPath = (folderId) => {
       let current = folderMap.get(folderId);
       if (!current) return '';
+
+      // For standard users: scoping under their department root
+      if (deptRootId) {
+        if (folderId === deptRootId) return '';
+        const parts = [];
+        let cur = current;
+        let isUnderDept = false;
+        while (cur) {
+          if (cur.id === deptRootId) {
+            isUnderDept = true;
+            break;
+          }
+          parts.unshift(cur.name);
+          cur = cur.parent_id ? folderMap.get(cur.parent_id) : null;
+        }
+        if (isUnderDept) {
+          return '\\' + parts.join('\\');
+        }
+      }
+
+      // Default org-level path (Super Admin or items outside dept root)
       const parts = [current.name];
       while (current && current.parent_id) {
         current = folderMap.get(current.parent_id);
@@ -669,10 +710,14 @@ export async function getDriveTree(req, res) {
       };
     });
 
-    const rootFoldersPayload = accessibleFolders.map(f => ({
+    const visibleFolders = deptRootId 
+      ? accessibleFolders.filter(f => f.id !== deptRootId)
+      : accessibleFolders;
+
+    const rootFoldersPayload = visibleFolders.map(f => ({
       id: f.id,
       name: f.name,
-      parentId: f.parent_id,
+      parentId: (deptRootId && f.parent_id === deptRootId) ? null : f.parent_id,
       virtualPath: getFolderPath(f.id),
       departmentId: f.department_id,
       permission: f.owner_id === userId ? 'OWNER' : 'READ_WRITE'

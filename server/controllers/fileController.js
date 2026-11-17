@@ -165,35 +165,90 @@ export async function getExplorerItems(req, res) {
           fileQuery += ' AND folder_id IS NULL';
         } else {
           const deptId = req.user.department_id;
-          folderQuery += `
-            AND parent_id IS NULL 
-            AND (
-              owner_id = $1 
-              OR ($2::int IS NOT NULL AND folders.department_id = $2::int)
-              OR EXISTS (
-                SELECT 1 FROM file_shares fs 
-                WHERE fs.folder_id = folders.id 
-                  AND fs.is_revoked = FALSE 
-                  AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
-                  AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2::int))
+          let deptRootId = null;
+          if (deptId) {
+            const drRes = await db.query(
+              `SELECT id FROM folders 
+               WHERE (department_id = $1 OR LOWER(name) = LOWER((SELECT name FROM departments WHERE id = $1))) 
+                 AND parent_id IS NULL AND is_trashed = FALSE 
+               ORDER BY created_at ASC LIMIT 1`,
+              [deptId]
+            );
+            if (drRes.rows && drRes.rows.length > 0) {
+              deptRootId = drRes.rows[0].id;
+            }
+          }
+
+          if (deptRootId) {
+            // Standard User: Mirror department contents directly at root
+            folderQuery += `
+              AND (
+                folders.parent_id = $3
+                OR (
+                  folders.parent_id IS NULL AND folders.id != $3 AND (
+                    folders.owner_id = $1
+                    OR EXISTS (
+                      SELECT 1 FROM file_shares fs 
+                      WHERE fs.folder_id = folders.id 
+                        AND fs.is_revoked = FALSE 
+                        AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
+                        AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2::int))
+                    )
+                  )
+                )
               )
-            )
-          `;
-          fileQuery += `
-            AND folder_id IS NULL 
-            AND (
-              owner_id = $1 
-              OR EXISTS (
-                SELECT 1 FROM file_shares fs 
-                WHERE fs.file_id = files.id 
-                  AND fs.is_revoked = FALSE 
-                  AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
-                  AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2::int))
+            `;
+            fileQuery += `
+              AND (
+                files.folder_id = $3
+                OR (
+                  files.folder_id IS NULL AND (
+                    files.owner_id = $1
+                    OR EXISTS (
+                      SELECT 1 FROM file_shares fs 
+                      WHERE fs.file_id = files.id 
+                        AND fs.is_revoked = FALSE 
+                        AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
+                        AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2::int))
+                    )
+                  )
+                )
               )
-            )
-          `;
-          folderParams.push(userId, deptId);
-          fileParams.push(userId, deptId);
+            `;
+            folderParams.push(userId, deptId, deptRootId);
+            fileParams.push(userId, deptId, deptRootId);
+          } else {
+            // Fallback if department has no assigned root folder
+            folderQuery += `
+              AND folders.parent_id IS NULL 
+              AND (
+                folders.owner_id = $1 
+                OR ($2::int IS NOT NULL AND folders.department_id = $2::int)
+                OR EXISTS (
+                  SELECT 1 FROM file_shares fs 
+                  WHERE fs.folder_id = folders.id 
+                    AND fs.is_revoked = FALSE 
+                    AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
+                    AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2::int))
+                )
+              )
+            `;
+            fileQuery += `
+              AND files.folder_id IS NULL 
+              AND (
+                files.owner_id = $1 
+                OR EXISTS (
+                  SELECT 1 FROM file_shares fs 
+                  WHERE fs.file_id = files.id 
+                    AND fs.is_revoked = FALSE 
+                    AND (fs.expires_at IS NULL OR fs.expires_at > CURRENT_TIMESTAMP)
+                    AND (fs.shared_with_user_id = $1 OR (fs.shared_with_department_id IS NOT NULL AND fs.shared_with_department_id = $2::int))
+                )
+              )
+            `;
+            folderParams.push(userId, deptId);
+            fileParams.push(userId, deptId);
+          }
         }
       } else {
         const auth = await verifyFolderAccess(userId, req.user.department_id, userRole, folderId, 'VIEWER');
@@ -295,7 +350,20 @@ export async function createFolder(req, res) {
     }
 
     const folderId = crypto.randomUUID();
-    const pid = parentId && parentId !== 'root' ? parentId : null;
+    let pid = parentId && parentId !== 'root' ? parentId : null;
+
+    if (!pid && req.user.role_name !== 'SUPER ADMIN' && req.user.department_id) {
+      const drRes = await db.query(
+        `SELECT id FROM folders 
+         WHERE (department_id = $1 OR LOWER(name) = LOWER((SELECT name FROM departments WHERE id = $1))) 
+           AND parent_id IS NULL AND is_trashed = FALSE 
+         ORDER BY created_at ASC LIMIT 1`,
+        [req.user.department_id]
+      );
+      if (drRes.rows && drRes.rows.length > 0) {
+        pid = drRes.rows[0].id;
+      }
+    }
 
     if (pid) {
       const auth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, pid, 'CONTRIBUTOR');
@@ -394,7 +462,19 @@ export async function initiateUploadSession(req, res) {
 
     let selectedVolume = null;
 
-    const pid = folderId && folderId !== 'root' ? folderId : null;
+    let pid = folderId && folderId !== 'root' ? folderId : null;
+    if (!pid && req.user.role_name !== 'SUPER ADMIN' && req.user.department_id) {
+      const drRes = await db.query(
+        `SELECT id FROM folders 
+         WHERE (department_id = $1 OR LOWER(name) = LOWER((SELECT name FROM departments WHERE id = $1))) 
+           AND parent_id IS NULL AND is_trashed = FALSE 
+         ORDER BY created_at ASC LIMIT 1`,
+        [req.user.department_id]
+      );
+      if (drRes.rows && drRes.rows.length > 0) {
+        pid = drRes.rows[0].id;
+      }
+    }
 
     // Check if target folder has an assigned preferred storage volume
     let targetVolId = targetVolumeId;
@@ -756,7 +836,19 @@ export async function directUpload(req, res) {
     }
 
     const { originalname, buffer, size, mimetype } = req.file;
-    const folderId = req.body.folderId && req.body.folderId !== 'root' ? req.body.folderId : null;
+    let folderId = req.body.folderId && req.body.folderId !== 'root' ? req.body.folderId : null;
+    if (!folderId && req.user.role_name !== 'SUPER ADMIN' && req.user.department_id) {
+      const drRes = await db.query(
+        `SELECT id FROM folders 
+         WHERE (department_id = $1 OR LOWER(name) = LOWER((SELECT name FROM departments WHERE id = $1))) 
+           AND parent_id IS NULL AND is_trashed = FALSE 
+         ORDER BY created_at ASC LIMIT 1`,
+        [req.user.department_id]
+      );
+      if (drRes.rows && drRes.rows.length > 0) {
+        folderId = drRes.rows[0].id;
+      }
+    }
 
     if (folderId) {
       const auth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, folderId, 'CONTRIBUTOR');
@@ -1033,7 +1125,19 @@ export async function moveItem(req, res) {
   try {
     const { id } = req.params;
     const { targetFolderId, itemType } = req.body;
-    const pid = targetFolderId && targetFolderId !== 'root' ? targetFolderId : null;
+    let pid = targetFolderId && targetFolderId !== 'root' ? targetFolderId : null;
+    if (!pid && req.user.role_name !== 'SUPER ADMIN' && req.user.department_id) {
+      const drRes = await db.query(
+        `SELECT id FROM folders 
+         WHERE (department_id = $1 OR LOWER(name) = LOWER((SELECT name FROM departments WHERE id = $1))) 
+           AND parent_id IS NULL AND is_trashed = FALSE 
+         ORDER BY created_at ASC LIMIT 1`,
+        [req.user.department_id]
+      );
+      if (drRes.rows && drRes.rows.length > 0) {
+        pid = drRes.rows[0].id;
+      }
+    }
 
     if (itemType === 'folder') {
       const auth = await verifyFolderAccess(req.user.id, req.user.department_id, req.user.role_name, id, 'EDITOR');

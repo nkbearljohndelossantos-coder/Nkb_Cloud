@@ -25,12 +25,7 @@ namespace NkbDrive.Client.UI
         {
             try
             {
-                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-            }
-            catch {}
-            try
-            {
-                ServicePointManager.SecurityProtocol |= (SecurityProtocolType)12288;
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
             }
             catch {}
             try
@@ -38,7 +33,7 @@ namespace NkbDrive.Client.UI
                 ServicePointManager.Expect100Continue = false;
                 ServicePointManager.DefaultConnectionLimit = 50;
                 ServicePointManager.ServerCertificateValidationCallback = (sender, cert, chain, sslPolicyErrors) => true;
-                WebRequest.DefaultWebProxy = null;
+                WebRequest.DefaultWebProxy = new WebProxy();
             }
             catch {}
 

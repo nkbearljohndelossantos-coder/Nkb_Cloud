@@ -649,8 +649,10 @@ namespace NkbDrive.Client.UI
 
             ThreadPool.QueueUserWorkItem(_ =>
             {
+                string logFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NKB Drive", "boot.log");
                 try
                 {
+                    File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] ExecuteLogin starting for " + email + " at " + server + Environment.NewLine);
                     StagingApiClient client = new StagingApiClient(server);
                     var loginRes = client.Login(email, pass);
                     string token = client.Token;
@@ -660,6 +662,7 @@ namespace NkbDrive.Client.UI
                         throw new InvalidOperationException("Authentication failed: No token received.");
                     }
 
+                    File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Login successful, registering device...\n");
                     // Register device
                     string machine = Environment.MachineName;
                     string fingerprint = "HW-" + Guid.NewGuid().ToString("N").Substring(0, 12).ToUpper();
@@ -680,6 +683,8 @@ namespace NkbDrive.Client.UI
                     _repo.SaveDeviceState(deviceId, machine, fingerprint, "APPROVED");
                     _repo.PurgeAllMetadata();
 
+                    File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] Device registered (" + deviceId + "). Starting mount and sync...\n");
+
                     Dispatcher.Invoke(() =>
                     {
                         _client = client;
@@ -695,13 +700,20 @@ namespace NkbDrive.Client.UI
                 }
                 catch (Exception ex)
                 {
-                    Dispatcher.Invoke(() =>
+                    File.AppendAllText(logFile, "[" + DateTime.UtcNow.ToString("o") + "] ExecuteLogin ERROR: " + ex.ToString() + Environment.NewLine);
+                    Dispatcher.Invoke((Action)(() =>
                     {
                         _loginSubmitBtn.IsEnabled = true;
                         _loginSubmitBtn.Content = "Authenticate & Mount Drive";
-                        _loginErrorText.Text = ex.Message;
+                        string msg = ex.Message;
+                        System.Net.WebException wex = ex as System.Net.WebException;
+                        if (wex != null && wex.Status == System.Net.WebExceptionStatus.Timeout)
+                        {
+                            msg = "Connection timed out. Please check your internet connection or verify the server endpoint.";
+                        }
+                        _loginErrorText.Text = msg;
                         _loginErrorText.Visibility = Visibility.Visible;
-                    });
+                    }));
                 }
             });
         }
