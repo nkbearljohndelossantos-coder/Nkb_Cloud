@@ -603,9 +603,9 @@ export async function getDriveTree(req, res) {
             -- Explicit department share
             OR (s.shared_with_department_id IS NOT NULL AND s.shared_with_department_id = $2)
             -- Assigned department
-            OR ($2 IS NOT NULL AND f.department_id = $2 AND f.parent_id IS NULL)
+            OR ($2 IS NOT NULL AND f.department_id = $2)
             -- Department name match (e.g. Marketing)
-            OR ($2 IS NOT NULL AND d.name IS NOT NULL AND LOWER(f.name) = LOWER(d.name) AND f.parent_id IS NULL)
+            OR ($2 IS NOT NULL AND d.name IS NOT NULL AND LOWER(f.name) = LOWER(d.name))
           )
         UNION
         SELECT c.id, c.name, c.parent_id, c.department_id, c.owner_id

@@ -597,6 +597,17 @@ namespace NkbDrive.Client.Storage
             }
         }
 
+        public void PurgeAllMetadata()
+        {
+            lock (_lock)
+            {
+                ExecuteNonQuery("DELETE FROM local_files;");
+                ExecuteNonQuery("DELETE FROM local_cache;");
+                ExecuteNonQuery("DELETE FROM sync_queue;");
+                ExecuteNonQuery("DELETE FROM offline_pins;");
+            }
+        }
+
         public void DeleteFileRecord(string fileId)
         {
             if (string.IsNullOrEmpty(fileId)) return;

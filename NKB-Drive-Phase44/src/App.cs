@@ -131,6 +131,7 @@ namespace NkbDrive.Client.UI
                 });
 
                 repo.SaveDeviceState(deviceId, machine, fingerprint, "APPROVED");
+                repo.PurgeAllMetadata();
 
                 Console.WriteLine("[CLI] Fetching directory tree...");
                 var tree = client.GetDriveTree();

@@ -50,7 +50,6 @@ export async function getExplorerItems(req, res) {
       FROM folders 
       LEFT JOIN storage_volumes sv ON folders.preferred_volume_id = sv.id
       WHERE folders.is_trashed = FALSE
-        AND (folders.preferred_volume_id IS NULL OR sv.status = 'ONLINE')
     `;
     let fileQuery = `
       SELECT files.*,

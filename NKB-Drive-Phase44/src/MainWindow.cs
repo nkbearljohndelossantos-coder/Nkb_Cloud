@@ -678,6 +678,7 @@ namespace NkbDrive.Client.UI
                     });
 
                     _repo.SaveDeviceState(deviceId, machine, fingerprint, "APPROVED");
+                    _repo.PurgeAllMetadata();
 
                     Dispatcher.Invoke(() =>
                     {
@@ -1256,6 +1257,11 @@ namespace NkbDrive.Client.UI
             if (_vault != null)
             {
                 _vault.Purge();
+            }
+
+            if (_repo != null)
+            {
+                _repo.PurgeAllMetadata();
             }
 
             _userNameText.Text = "Not Logged In";
